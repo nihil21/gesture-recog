@@ -2,6 +2,7 @@
   <dictionary name="matt">
     <words>
       <w>bufsize</w>
+      <w>disp</w>
       <w>ipaddr</w>
       <w>msglen</w>
       <w>xbytes</w>

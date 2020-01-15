@@ -1,76 +1,194 @@
-import socket
 import cv2
-import pickle
+import numpy as np
+import zmq
+import base64
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
-from utils.network_utils import recv_until_term
+from typing import Dict, Callable
+import traceback
 
 # Ports for both cameras
 DX_PORT = 8000
 SX_PORT = 8001
 
+# Folders to store images for calibration
+DX_FOLDER = "../calibration/dx/"
+SX_FOLDER = "../calibration/sx/"
 
-def create_server_socket(tcp_port: int) -> socket:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(('', tcp_port))
-    sock.listen(1)
+# Chessboard size
+BS = (8, 5)
+
+
+def create_socket(context: zmq.Context, tcp_port: int) -> zmq.Socket:
+    """Creates a zmq.PAIR socket
+        :param context: the zmq context
+        :param tcp_port: integer representing the port
+
+        :return sock: the zmq.PAIR socket created"""
+
+    sock = context.socket(zmq.PAIR)
+    sock.setsockopt(zmq.LINGER, 0)
+    sock.bind('tcp://*:{:d}'.format(tcp_port))
 
     return sock
 
 
-def accept_clients(server_sock: socket, sock_idx: str) -> socket:
-    client_sock, client_addr = server_sock.accept()
-    msg = '{} client connected: {}'.format(sock_idx, client_addr)
-    print(msg)
+def accept_client_thread(sock: zmq.Socket, sock_idx: str):
+    """Confirms connection to client by sending a message
+        :param sock: the zmq socket
+        :param sock_idx: the index of the client ('DX'/'SX')"""
 
-    # Send message to client
-    client_sock.send(msg.encode(encoding='utf-8'))
-
-    return client_sock
+    sock.send_string('Connection established with server')
+    print('Connection established with client {}'.format(sock_idx))
 
 
-def receive_frame_thread(sock: socket, sock_idx: str):
-    # Send message to client
-    sock.send('Both clients connected, transmission can start'.encode(encoding='utf-8'))
+def user_input() -> int:
+    """Displays a menu of the available actions and asks user's input
+        :return sel: integer representing user's choice"""
+
+    print('')
+    print('=' * 40)
+    print('1 - Collect images for calibration')
+    print('2 - Perform calibration')
+    print('3 - Real time disparity map')
+    print('4 - Exit')
 
     while True:
-        # Read stream in buffers of 4096 until a termination character '\0' is found
-        serial_frame = recv_until_term(sock, bufsize=4096)
+        try:
+            sel = input('Select one of the options [1, 2, 3, 4]: ')
+            sel = int(sel)
+            if sel not in [1, 2, 3, 4]:
+                print('The option inserted is not valid, retry.')
+            else:
+                break
+        except ValueError:
+            print('The option inserted is not numeric, retry.')
+    print('-' * 40)
+    return sel
 
-        frame = pickle.loads(serial_frame)
 
-        cv2.imshow('DX', frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            sock.send('Stop'.encode(encoding='utf-8'))
-            break
-        sock.send('Next'.encode(encoding='utf-8'))
+def select_function(sel: int) -> Callable[[Dict[str, zmq.Socket]], None]:
+    """Selects the function corresponding to user's choice
+        :param sel: integer representing user's choice
+
+        :return f: function corresponding to user's choice"""
+    # Switcher dictionary associating a number to a function
+    switcher = {
+        1: capture_images,
+        2: calibrate,
+        3: disp_map
+    }
+    # Get function from switcher dictionary
+    f = switcher.get(sel)
+    return f
+
+
+def capture_images(socks: Dict[str, zmq.Socket]):
+    print('Collecting images of a chessboard for calibration...')
+    # Receive frames by both clients using threads
+    with ThreadPoolExecutor() as executor:
+        executor.submit(capture_images_thread, socks['DX'], 'DX')
+        executor.submit(capture_images_thread, socks['SX'], 'SX')
+    print('Images collected')
+
+
+def capture_images_thread(sock: zmq.Socket, sock_idx: str):
+    # Initialize variables for countdown
+    n_pics, tot_pics = 0, 5
+    n_sec, tot_sec = 0, 4
+    str_sec = '4321'
+    start_time = datetime.now()
+
+    # Loop until 'tot_pics' images are collected
+    while n_pics < tot_pics:
+        # Read frame as a base64 string
+        serial_frame = sock.recv_string()
+        buffer = base64.b64decode(serial_frame)
+        frame = cv2.imdecode(np.fromstring(buffer, dtype=np.uint8), 1)
+
+        # Display counter on screen before saving frame
+        if n_sec < tot_sec:
+            # Draw on screen the current remaining seconds
+            frame = cv2.putText(img=frame,
+                                           text=str_sec[n_sec],
+                                           org=(int(40), int(80)),
+                                           fontFace=cv2.FONT_HERSHEY_DUPLEX,
+                                           fontScale=3,
+                                           color=(255, 255, 255),
+                                           thickness=5,
+                                           lineType=cv2.LINE_AA)
+
+            # If time elapsed is greater than one second, update 'n_sec'
+            time_elapsed = (datetime.now() - start_time).total_seconds()
+            if time_elapsed >= 1:
+                n_sec += 1
+                start_time = datetime.now()
+        else:
+            # When countdown ends, save image to file
+            path = DX_FOLDER if sock_idx == 'DX' else SX_FOLDER
+            cv2.imwrite(path + '{:02d}'.format(n_pics) + '.jpg', frame)
+            n_pics += 1
+            n_sec = 0
+            print('{:d}/{:d} images collected'.format(n_pics, tot_pics))
+
+        cv2.imshow('{} frame'.format(sock_idx), frame)
+        cv2.waitKey(1)  # invocation of non-blocking 'waitKey', required by OpenCV after 'imshow'
+        if n_pics == tot_pics:
+            # If enough images are collected, the termination signal is sent to the client
+            sock.send_string('\0')
+
+    cv2.destroyAllWindows()
+
+
+# TODO
+def calibrate():
+    pass
+
+
+# TODO
+def disp_map():
+    pass
 
 
 def main():
-    # Set up server sockets
-    server_socks = {'DX': create_server_socket(DX_PORT), 'SX': create_server_socket(SX_PORT)}
-    print('Waiting on ports {} and {}...'.format(DX_PORT, SX_PORT))
+    context = None
+    socks = None
+    try:
+        # Set up zmq context and sockets PAIR
+        context = zmq.Context()
+        socks = {'DX': create_socket(context, DX_PORT), 'SX': create_socket(context, SX_PORT)}
+        print('Waiting on ports {} and {}...'.format(DX_PORT, SX_PORT))
 
-    # Accept connections in a thread pool
-    client_socks = {}
-    with ThreadPoolExecutor() as executor:
-        future_dx = executor.submit(accept_clients, server_socks['DX'], 'DX')
-        #future_sx = executor.submit(accept_clients, server_socks['SX'], 'SX')
-        client_socks['DX'] = future_dx.result()
-        #client_socks['SX'] = future_sx.result()
+        # Accept connections in a thread pool
+        with ThreadPoolExecutor() as executor:
+            executor.submit(accept_client_thread, socks['DX'], 'DX')
+            executor.submit(accept_client_thread, socks['SX'], 'SX')
 
-    print('Both clients connected, transmission can start.')
+        # Confirm connection to both clients by sending a message
+        msg = 'Connection established with both clients'
+        print(msg)
+        for sock in socks.values():
+            sock.send_string(msg)
 
-    # Receive frames by both clients using threads
-    with ThreadPoolExecutor() as executor:
-        future_dx = executor.submit(receive_frame_thread, client_socks['DX'], 'DX')
-        #future_sx = executor.submit(receive_frame_thread, client_socks['SX'], 'SX')
-        #frame = future_dx.result()
+        # User input cycle
+        while True:
+            # Display action menu and ask for user input
+            sel = user_input()
+            # Send user's choice to both clients
+            for sock in socks.values():
+                sock.send_string(str(sel))
+            if sel == 4:
+                break
+            # Select the corresponding function
+            f = select_function(sel)
+            f(socks)
 
-    # Close sockets
-    for sock in server_socks.values():
-        sock.shutdown(socket.SHUT_RDWR)
-        sock.close()
+    finally:
+        # Closing sockets
+        for sock in socks.values():
+            sock.close()
+        context.term()
+        print('Terminating...')
 
 
 main()
