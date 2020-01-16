@@ -5,7 +5,6 @@ import base64
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Callable
-import traceback
 
 # Ports for both cameras
 DX_PORT = 8000
@@ -19,6 +18,7 @@ SX_FOLDER = "../calibration/sx/"
 BS = (8, 5)
 
 
+# noinspection PyUnresolvedReferences
 def create_socket(context: zmq.Context, tcp_port: int) -> zmq.Socket:
     """Creates a zmq.PAIR socket
         :param context: the zmq context
@@ -40,6 +40,12 @@ def accept_client_thread(sock: zmq.Socket, sock_idx: str):
 
     sock.send_string('Connection established with server')
     print('Connection established with client {}'.format(sock_idx))
+
+
+def concurrent_send(socks: Dict[str, zmq.Socket], msg: str):
+    with ThreadPoolExecutor() as executor:
+        executor.submit(socks['DX'].send_string, msg)
+        executor.submit(socks['SX'].send_string, msg)
 
 
 def user_input() -> int:
@@ -85,14 +91,24 @@ def select_function(sel: int) -> Callable[[Dict[str, zmq.Socket]], None]:
 
 def capture_images(socks: Dict[str, zmq.Socket]):
     print('Collecting images of a chessboard for calibration...')
+    
+    # Receive confirmation by the client and send signal to synchronize both cameras
+    with ThreadPoolExecutor() as executor:
+        executor.submit(socks['DX'].recv_string)
+        executor.submit(socks['SX'].recv_string)
+    
     # Receive frames by both clients using threads
+    print("Both cameras are ready")
     with ThreadPoolExecutor() as executor:
         executor.submit(capture_images_thread, socks['DX'], 'DX')
         executor.submit(capture_images_thread, socks['SX'], 'SX')
     print('Images collected')
 
 
+# noinspection PyUnresolvedReferences
 def capture_images_thread(sock: zmq.Socket, sock_idx: str):
+    sock.send_string("Start signal received")
+
     # Initialize variables for countdown
     n_pics, tot_pics = 0, 5
     n_sec, tot_sec = 0, 4
@@ -110,13 +126,13 @@ def capture_images_thread(sock: zmq.Socket, sock_idx: str):
         if n_sec < tot_sec:
             # Draw on screen the current remaining seconds
             frame = cv2.putText(img=frame,
-                                           text=str_sec[n_sec],
-                                           org=(int(40), int(80)),
-                                           fontFace=cv2.FONT_HERSHEY_DUPLEX,
-                                           fontScale=3,
-                                           color=(255, 255, 255),
-                                           thickness=5,
-                                           lineType=cv2.LINE_AA)
+                                text=str_sec[n_sec],
+                                org=(int(40), int(80)),
+                                fontFace=cv2.FONT_HERSHEY_DUPLEX,
+                                fontScale=3,
+                                color=(255, 255, 255),
+                                thickness=5,
+                                lineType=cv2.LINE_AA)
 
             # If time elapsed is greater than one second, update 'n_sec'
             time_elapsed = (datetime.now() - start_time).total_seconds()
@@ -129,7 +145,7 @@ def capture_images_thread(sock: zmq.Socket, sock_idx: str):
             cv2.imwrite(path + '{:02d}'.format(n_pics) + '.jpg', frame)
             n_pics += 1
             n_sec = 0
-            print('{:d}/{:d} images collected'.format(n_pics, tot_pics))
+            print('{}: {:d}/{:d} images collected'.format(sock_idx, n_pics, tot_pics))
 
         cv2.imshow('{} frame'.format(sock_idx), frame)
         cv2.waitKey(1)  # invocation of non-blocking 'waitKey', required by OpenCV after 'imshow'
@@ -167,16 +183,14 @@ def main():
         # Confirm connection to both clients by sending a message
         msg = 'Connection established with both clients'
         print(msg)
-        for sock in socks.values():
-            sock.send_string(msg)
+        concurrent_send(socks, msg)
 
         # User input cycle
         while True:
             # Display action menu and ask for user input
             sel = user_input()
             # Send user's choice to both clients
-            for sock in socks.values():
-                sock.send_string(str(sel))
+            concurrent_send(socks, str(sel))
             if sel == 4:
                 break
             # Select the corresponding function

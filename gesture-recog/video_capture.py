@@ -5,21 +5,28 @@ import cv2
 import base64
 import time
 from typing import Dict, Callable
-#from picamera.array import PiRGBArray
-#from picamera import PiCamera
+try:
+    from picamera.array import PiRGBArray
+    from picamera import PiCamera
+    print("PiCamera will be used.")
+    webcam = False
+except OSError:
+    print("PiCamera not supported by the system, webcam will be used.")
+    webcam = True
 
 # Camera size
 CS = (640, 480)
 
 
-def select_function(sel: int) -> Callable[[Dict[str, zmq.Socket]], None]:
+def select_function(sel: int, webcam: bool) -> Callable[[Dict[str, zmq.Socket]], None]:
     """Selects the function corresponding to user's choice
         :param sel: integer representing user's choice
+        :param webcam: boolean representing the camera that will be used: False for PiCamera (default), True for webcam
 
         :return f: function corresponding to user's choice"""
     # Switcher dictionary associating a number to a function
     switcher = {
-        1: capture_images,
+        1: capture_images if not webcam else capture_images_webcam,
         2: calibrate,
         3: disp_map
     }
@@ -28,7 +35,8 @@ def select_function(sel: int) -> Callable[[Dict[str, zmq.Socket]], None]:
     return f
 
 
-def capture_images(sock):
+# noinspection PyUnresolvedReferences
+def capture_images_webcam(sock):
     print('Collecting images for calibration...')
 
     # Initialize camera
@@ -36,6 +44,10 @@ def capture_images(sock):
 
     # Camera warm-up
     time.sleep(0.1)
+
+    # Tell the server that the camera is ready
+    sock.send_string('Ready')
+    print(sock.recv_string())
 
     while True:
         # Grab frame from video
@@ -60,6 +72,46 @@ def capture_images(sock):
     print('Images collected')
 
 
+# noinspection PyUnresolvedReferences
+def capture_images(sock):
+    print('Collecting images for calibration...')
+
+    # Initialize camera
+    camera = PiCamera()
+    camera.resolution = CS
+    camera.framerate = 32
+    raw_capture = PiRGBArray(camera, size=CS)
+
+    # Camera warm-up
+    time.sleep(0.1)
+
+    # Tell the server that the camera is ready
+    sock.send_string('Ready')
+    print(sock.recv_string())
+
+    for capture in camera.capture_continuous(raw_capture, format='bgr', use_video_port=True):
+        # Grab raw NumPy array representing the frame
+        frame = capture.array
+
+        # Send the frame as a base64 string
+        encoded, buffer = cv2.imencode('.jpg', frame)
+        jpg_as_text = base64.b64encode(buffer)
+        sock.send(jpg_as_text)
+
+        raw_capture.truncate(0)
+
+        # Try to read the termination signal from a non-blocking recv
+        try:
+            # If the recv succeeds, break from the loop
+            sig = sock.recv_string(flags=zmq.NOBLOCK)
+            print('Termination signal received', sig)
+            break
+        except zmq.Again:
+            pass
+
+    print('Images collected')
+
+
 # TODO
 def calibrate():
     pass
@@ -68,38 +120,6 @@ def calibrate():
 # TODO
 def disp_map():
     pass
-
-
-def capture_from_picamera(sock: zmq.Socket):
-    # Initialize camera
-    #camera = PiCamera()
-    #camera.resolution = (CW, CH)
-    #camera.framerate = 32
-    #raw_capture = PiRGBArray(camera, size=(CW, CH))
-
-    # Camera warm-up
-    time.sleep(0.1)
-
-    #for capture in camera.capture_continuous(raw_capture, format='bgr', use_video_port=True):
-        # Grab raw NumPy array representing the frame
-    #    frame = capture.array
-
-        # Send the frame as a base64 string
-    #    encoded, buffer = cv2.imencode('.jpg', frame)
-    #    jpg_as_text = base64.b64encode(buffer)
-    #    sock.send(jpg_as_text)
-
-        # Clear stream for next frame
-    #    raw_capture.truncate(0)
-
-        # Try to read the termination signal from a non-blocking recv
-    #    try:
-            # If the recv succeeds, break from the loop
-    #        sig = sock.recv_string(flags=zmq.NOBLOCK)
-    #        print('Termination signal received', sig)
-    #        break
-    #    except zmq.Again:
-    #        pass
 
 
 def main():
@@ -119,10 +139,14 @@ def main():
     if not 1024 <= port <= 65535:
         sys.exit("Argument 'port' must within range [1024, 65535].")
 
+    context = None
+    sock = None
     try:
         # Connect to server
         context = zmq.Context()
+        # noinspection PyUnresolvedReferences
         sock = context.socket(zmq.PAIR)
+        # noinspection PyUnresolvedReferences
         sock.setsockopt(zmq.LINGER, 0)
         sock.connect("tcp://{}:{}".format(ipaddr, port))
 
@@ -140,7 +164,7 @@ def main():
             if sel == 4:
                 break
             # Select corresponding function
-            f = select_function(sel)
+            f = select_function(sel, webcam)
             f(sock)
 
     finally:

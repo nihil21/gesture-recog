@@ -5,6 +5,7 @@
       <w>disp</w>
       <w>ipaddr</w>
       <w>msglen</w>
+      <w>webcam</w>
       <w>xbytes</w>
     </words>
   </dictionary>
