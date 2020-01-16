@@ -18,10 +18,9 @@ except OSError:
 CS = (640, 480)
 
 
-def select_function(sel: int, webcam: bool) -> Callable[[Dict[str, zmq.Socket]], None]:
+def select_function(sel: int) -> Callable[[Dict[str, zmq.Socket]], None]:
     """Selects the function corresponding to user's choice
         :param sel: integer representing user's choice
-        :param webcam: boolean representing the camera that will be used: False for PiCamera (default), True for webcam
 
         :return f: function corresponding to user's choice"""
     # Switcher dictionary associating a number to a function
@@ -164,7 +163,7 @@ def main():
             if sel == 4:
                 break
             # Select corresponding function
-            f = select_function(sel, webcam)
+            f = select_function(sel)
             f(sock)
 
     finally:
