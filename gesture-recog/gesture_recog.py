@@ -101,7 +101,7 @@ def main():
 
             # Tell clients to prepare for streaming, by sending user's selection,
             # unless he chose calibration (done server-side only)
-            if sel != 2 or sel != 3:
+            if sel != 2 and sel != 3:
                 concurrent_send(socks, str(sel))
             if sel == 4:
                 break
