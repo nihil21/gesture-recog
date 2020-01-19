@@ -1,7 +1,7 @@
 import zmq
 from concurrent.futures import ThreadPoolExecutor
-from calibration_tools import capture_images, calibrate, disp_map
-from utils import concurrent_send
+from utils.calibration_tools import capture_images, calibrate, disp_map
+from utils.network_tools import concurrent_send
 
 # Ports for both cameras
 DX_PORT = 8000

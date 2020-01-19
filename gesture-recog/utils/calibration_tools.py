@@ -7,7 +7,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Tuple, List
 from matplotlib import pyplot as plt
-from error import ChessboardNotFoundError
+from exceptions.error import ChessboardNotFoundError
 
 
 def capture_images(socks: Dict[str, zmq.Socket],
