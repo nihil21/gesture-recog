@@ -196,6 +196,12 @@ def calibrate(folders: Dict[str, str],
 
 def process_stereo_image(img_pair_name: Tuple[str, str],
                          pattern_size: Tuple[int, int]) -> (np.ndarray, np.ndarray):
+    """Processes a right/left pair of images and detects chessboard corners for calibration
+        :param img_pair_name: tuple containing the names of the right and left images, respectively
+        :param pattern_size: tuple containing the number of internal corners of the chessboard
+
+        :returns corners_pair: tuple containing two NumPy arrays, each representing the corners
+                               of the right and left images"""
     stereo_img_name = img_pair_name[0].split('/')[-1:]
     print('Processing image {}'.format(stereo_img_name))
 
