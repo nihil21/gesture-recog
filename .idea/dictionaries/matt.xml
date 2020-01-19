@@ -2,9 +2,18 @@
   <dictionary name="matt">
     <words>
       <w>bufsize</w>
+      <w>calib</w>
+      <w>coefs</w>
       <w>disp</w>
+      <w>imgs</w>
+      <w>imshow</w>
       <w>ipaddr</w>
+      <w>mapx</w>
+      <w>mapy</w>
       <w>msglen</w>
+      <w>picamera</w>
+      <w>rvecs</w>
+      <w>tvecs</w>
       <w>webcam</w>
       <w>xbytes</w>
     </words>

@@ -4,7 +4,6 @@ import zmq
 import cv2
 import base64
 import time
-from typing import Dict, Callable
 try:
     from picamera.array import PiRGBArray
     from picamera import PiCamera
@@ -15,71 +14,18 @@ except OSError:
     webcam = True
 
 # Camera size
-CS = (640, 480)
-
-
-def select_function(sel: int) -> Callable[[Dict[str, zmq.Socket]], None]:
-    """Selects the function corresponding to user's choice
-        :param sel: integer representing user's choice
-
-        :return f: function corresponding to user's choice"""
-    # Switcher dictionary associating a number to a function
-    switcher = {
-        1: capture_images if not webcam else capture_images_webcam,
-        2: calibrate,
-        3: disp_map
-    }
-    # Get function from switcher dictionary
-    f = switcher.get(sel)
-    return f
+CAMERA_SIZE = (640, 480)
 
 
 # noinspection PyUnresolvedReferences
-def capture_images_webcam(sock):
-    print('Collecting images for calibration...')
-
-    # Initialize camera
-    video_capture = cv2.VideoCapture(0)
-
-    # Camera warm-up
-    time.sleep(0.1)
-
-    # Tell the server that the camera is ready
-    sock.send_string('Ready')
-    print(sock.recv_string())
-
-    while True:
-        # Grab frame from video
-        ret, frame = video_capture.read()
-        frame = cv2.resize(frame, CS)
-
-        # Send the frame as a base64 string
-        encoded, buffer = cv2.imencode('.jpg', frame)
-        jpg_as_text = base64.b64encode(buffer)
-        sock.send(jpg_as_text)
-
-        # Try to read the termination signal from a non-blocking recv
-        try:
-            # If the recv succeeds, break from the loop
-            sig = sock.recv_string(flags=zmq.NOBLOCK)
-            print('Termination signal received', sig)
-            break
-        except zmq.Again:
-            pass
-
-    video_capture.release()
-    print('Images collected')
-
-
-# noinspection PyUnresolvedReferences
-def capture_images(sock):
-    print('Collecting images for calibration...')
+def stream_from_picamera(sock: zmq.Socket) -> None:
+    print('Streaming from PiCamera...')
 
     # Initialize camera
     camera = PiCamera()
-    camera.resolution = CS
+    camera.resolution = CAMERA_SIZE
     camera.framerate = 32
-    raw_capture = PiRGBArray(camera, size=CS)
+    raw_capture = PiRGBArray(camera, size=CAMERA_SIZE)
 
     # Camera warm-up
     time.sleep(0.1)
@@ -107,18 +53,44 @@ def capture_images(sock):
             break
         except zmq.Again:
             pass
-
-    print('Images collected')
-
-
-# TODO
-def calibrate():
-    pass
+    # Release resource
+    camera.close()
 
 
-# TODO
-def disp_map():
-    pass
+# noinspection PyUnresolvedReferences
+def stream_from_webcam(sock: zmq.Socket) -> None:
+    print('Streaming from webcam...')
+
+    # Initialize camera
+    video_capture = cv2.VideoCapture(0)
+
+    # Camera warm-up
+    time.sleep(0.1)
+
+    # Tell the server that the camera is ready
+    sock.send_string('Ready')
+    print(sock.recv_string())
+
+    while True:
+        # Grab frame from video
+        ret, frame = video_capture.read()
+        frame = cv2.resize(frame, CAMERA_SIZE)
+
+        # Send the frame as a base64 string
+        encoded, buffer = cv2.imencode('.jpg', frame)
+        jpg_as_text = base64.b64encode(buffer)
+        sock.send(jpg_as_text)
+
+        # Try to read the termination signal from a non-blocking recv
+        try:
+            # If the recv succeeds, break from the loop
+            sig = sock.recv_string(flags=zmq.NOBLOCK)
+            print('Termination signal received', sig)
+            break
+        except zmq.Again:
+            pass
+    # Release resource
+    video_capture.release()
 
 
 def main():
@@ -162,10 +134,12 @@ def main():
             sel = int(sock.recv_string())
             if sel == 4:
                 break
-            # Select corresponding function
-            f = select_function(sel)
-            f(sock)
-
+            # Start streaming
+            stream = stream_from_picamera if not webcam else stream_from_webcam
+            stream(sock)
+    except KeyboardInterrupt:
+        print('')
+        print('Enforcing termination manually')
     finally:
         # Closing sockets
         sock.close()
