@@ -133,6 +133,9 @@ def shot_from_picamera(sock: zmq.Socket, flip: bool) -> None:
     jpg_as_text = base64.b64encode(buffer)
     sock.send(jpg_as_text)
 
+    # Release resource
+    camera.close()
+
 
 # noinspection PyUnresolvedReferences
 def shot_from_webcam(sock: zmq.Socket, flip: bool) -> None:

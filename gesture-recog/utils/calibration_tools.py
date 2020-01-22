@@ -323,7 +323,7 @@ def disp_map(socks: Dict[str, zmq.Socket],
     # Create stereo matcher
     range_disp = 6
     min_disp = 0
-    num_disp = 16 * range_disp - min_disp
+    num_disp = 16 * (range_disp - min_disp)
     block_size = 20
     window_size = 7
     stereo_matcher = cv2.StereoSGBM_create(minDisparity=min_disp,
