@@ -1,43 +1,43 @@
 import cv2
 import numpy as np
 import zmq
-import base64
 import glob
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Tuple, List
 from matplotlib import pyplot as plt
 from exceptions.error import ChessboardNotFoundError
+from utils.network_tools import concurrent_send, recv_frame
 
 
 def capture_images(socks: Dict[str, zmq.Socket],
                    folders: Dict[str, str]) -> None:
     """Function which coordinates the capture of images from both cameras
-        :param socks: dictionary containing the two zmq sockets for the two clients, identified by a label
+        :param socks: dictionary containing the two zmq sockets for the two slaves, identified by a label
         :param folders: dictionary containing the folder in which images will be saved, identified by a label"""
     print('Collecting images of a chessboard for calibration...')
 
-    # Receive confirmation by the client
+    # Receive confirmation by the slave
     with ThreadPoolExecutor(max_workers=2) as executor:
-        executor.submit(socks['DX'].recv_string)
-        executor.submit(socks['SX'].recv_string)
+        executor.submit(socks['L'].recv_string)
+        executor.submit(socks['R'].recv_string)
 
-    # Receive frames by both clients using threads
+    # Receive frames by both slaves using threads
     print("Both cameras are ready")
     with ThreadPoolExecutor(max_workers=2) as executor:
-        executor.submit(capture_images_thread, socks['DX'], folders['DX'], 'DX')
-        executor.submit(capture_images_thread, socks['SX'], folders['SX'], 'SX')
+        executor.submit(capture_images_thread, socks['L'], folders['L'], 'L')
+        executor.submit(capture_images_thread, socks['R'], folders['R'], 'R')
     print('Images collected')
 
 
 # noinspection PyUnresolvedReferences
 def capture_images_thread(sock: zmq.Socket,
                           folder: str,
-                          sock_idx: str) -> None:
+                          camera_idx: str) -> None:
     """Captures a series of images from the remote camera
         :param sock: zmq socket to communicate with the remote camera
         :param folder: path of the folder in which images will be saved
-        :param sock_idx: index of the socket ('DX' or 'SX')"""
+        :param camera_idx: index of the socket ('L'/'R')"""
     # Send signal to synchronize both cameras
     sock.send_string("Start signal received")
 
@@ -49,10 +49,7 @@ def capture_images_thread(sock: zmq.Socket,
 
     # Loop until 'tot_pics' images are collected
     while n_pics < tot_pics:
-        # Read frame as a base64 string
-        serial_frame = sock.recv_string()
-        buffer = base64.b64decode(serial_frame)
-        frame = cv2.imdecode(np.fromstring(buffer, dtype=np.uint8), 1)
+        frame = recv_frame(sock)
 
         # Display counter on screen before saving frame
         if n_sec < tot_sec:
@@ -78,12 +75,12 @@ def capture_images_thread(sock: zmq.Socket,
             cv2.imwrite(path + '{:02d}'.format(n_pics) + '.jpg', gray_frame)
             n_pics += 1
             n_sec = 0
-            print('{}: {:d}/{:d} images collected'.format(sock_idx, n_pics, tot_pics))
+            print('{}: {:d}/{:d} images collected'.format(camera_idx, n_pics, tot_pics))
 
-        cv2.imshow('{} frame'.format(sock_idx), frame)
+        cv2.imshow('{} frame'.format(camera_idx), frame)
         cv2.waitKey(1)  # invocation of non-blocking 'waitKey', required by OpenCV after 'imshow'
         if n_pics == tot_pics:
-            # If enough images are collected, the termination signal is sent to the client
+            # If enough images are collected, the termination signal is sent to the slave
             sock.send_string('\0')
 
     # Try to read the last frames, if any
@@ -101,63 +98,101 @@ def capture_images_thread(sock: zmq.Socket,
 def calibrate(folders: Dict[str, str],
               pattern_size: Tuple[int, int],
               square_length: float,
-              calib_folders: Dict[str, str]) -> None:
+              calib_file: str) -> None:
     """Calibrates both cameras using pictures of a chessboard
         :param folders: dictionary containing the folder in which images will be saved, identified by a label
         :param pattern_size: size of the chessboard used for calibration
         :param square_length: float representing the length, in mm, of the square edge
-        :param calib_folders: dictionary containing the file path in which calibration data will be saved,
-                              identified by a label"""
+        :param calib_file: path to the file in which calibration data will be saved"""
 
     # Get a list of images captured, divided by folder
-    dx_img_names, sx_img_names = glob.glob(folders['DX'] + '*.jpg'), glob.glob(folders['SX'] + '*.jpg')
+    img_namesL, img_namesR = glob.glob(folders['L'] + '*.jpg'), glob.glob(folders['R'] + '*.jpg')
     # Produce a list of pairs '(right_image, left_image)'
     # If one list has more elements than the other, the extra elements will be automatically discarded by 'zip'
-    img_pair_names = list(zip(dx_img_names, sx_img_names))
+    img_name_pairs = list(zip(img_namesL, img_namesR))
     # Process concurrently stereo images
-    corners_pairs = []
-    img_corners_pairs = []
+    stereo_img_names = []
+    stereo_img_points_list = []
+    stereo_img_drawn_corners_list = []
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(process_stereo_image,
-                                   img_pair_name,
+                                   img_name_pair,
                                    pattern_size)
-                   for img_pair_name in img_pair_names]
+                   for img_name_pair in img_name_pairs]
 
         for future in as_completed(futures):
             try:
-                corners_pair, img_corners_pair = future.result()
-                corners_pairs.append(corners_pair)
-                img_corners_pairs.append(img_corners_pair)
+                stereo_img_name, stereo_img_points, stereo_img_drawn_corners = future.result()
+                stereo_img_names.append(stereo_img_name)
+                stereo_img_points_list.append(stereo_img_points)
+                stereo_img_drawn_corners_list.append(stereo_img_drawn_corners)
             except ChessboardNotFoundError as e:
                 print('No chessboard found in image {}'.format(e.image))
 
-    # Produce two lists of corners, one for the right and one for the left cameras
-    corners_pairs_unzipped = [list(t) for t in zip(*corners_pairs)]
-    dx_corners = corners_pairs_unzipped[0]
-    sx_corners = corners_pairs_unzipped[1]
+    # Produce two lists of image points, one for the right and one for the left cameras
+    stereo_img_points_unzipped = [list(t) for t in zip(*stereo_img_points_list)]
+    img_pointsL = stereo_img_points_unzipped[0]
+    img_pointsR = stereo_img_points_unzipped[1]
 
-    # Get image shape
-    h, w = img_corners_pairs[0][0].shape[:2]
+    # Prepare object points by obtaining a grid, scaling it by the square edge length and reshaping it
+    pattern_points = np.zeros([pattern_size[0] * pattern_size[1], 3], dtype=np.float32)
+    pattern_points[:, :2] = (np.indices(pattern_size, dtype=np.float32) * square_length).T.reshape(-1, 2)
+    # Append them in a list with the same length as the image points' one
+    obj_points = []
+    for i in range(0, len(img_pointsL)):
+        obj_points.append(pattern_points)
 
-    # Calibrate concurrently both cameras and get the distortion mapping
-    print('Calibrating both cameras...')
+    # Get camera size
+    h, w = stereo_img_drawn_corners_list[0][0].shape[:2]
+
+    # Calibrate concurrently single cameras and get the camera intrinsic parameters
     with ThreadPoolExecutor(max_workers=2) as executor:
-        future_dx = executor.submit(calibrate_single_camera,
-                                    dx_corners,
-                                    pattern_size,
-                                    square_length,
-                                    (w, h),
-                                    calib_folders['DX'])
-        future_sx = executor.submit(calibrate_single_camera,
-                                    sx_corners,
-                                    pattern_size,
-                                    square_length,
-                                    (w, h),
-                                    calib_folders['SX'])
-        dx_mapx, dx_mapy, dx_roi = future_dx.result()
-        sx_mapx, sx_mapy, sx_roi = future_sx.result()
+        futureL = executor.submit(calibrate_single_camera,
+                                  img_pointsL,
+                                  obj_points,
+                                  (w, h),
+                                  'L')
+        futureR = executor.submit(calibrate_single_camera,
+                                  img_pointsR,
+                                  obj_points,
+                                  (w, h),
+                                  'R')
+        cam_mtxL, distL = futureL.result()
+        cam_mtxR, distR = futureR.result()
 
-    # Ask user to plot corrected test images
+    # Use intrinsic parameters to calibrate more reliably the stereo camera
+    print('Calibrate stereo camera...')
+    flag = cv2.CALIB_FIX_INTRINSIC
+    error, cam_mtxL, distL, cam_mtxR, distR, rot_mtx, trasl_mtx, e_mtx, f_mtx = cv2.stereoCalibrate(obj_points,
+                                                                                                    img_pointsL,
+                                                                                                    img_pointsR,
+                                                                                                    cam_mtxL,
+                                                                                                    distL,
+                                                                                                    cam_mtxR,
+                                                                                                    distR,
+                                                                                                    (w, h),
+                                                                                                    flags=flag)
+    print('Stereo camera calibrated, error: {}'.format(error))
+    rot_mtxL, rot_mtxR, proj_mtxL, proj_mtxR, disp_to_depth_mtx, valid_ROIL, valid_ROIR = cv2.stereoRectify(cam_mtxL,
+                                                                                                            distL,
+                                                                                                            cam_mtxR,
+                                                                                                            distR,
+                                                                                                            (w, h),
+                                                                                                            rot_mtx,
+                                                                                                            trasl_mtx)
+    # Compute the undistorted and rectify mapping
+    mapxL, mapyL = cv2.initUndistortRectifyMap(cam_mtxL, distL, rot_mtxL, proj_mtxL, (w, h), cv2.CV_32FC1)
+    mapxR, mapyR = cv2.initUndistortRectifyMap(cam_mtxR, distR, rot_mtxR, proj_mtxR, (w, h), cv2.CV_32FC1)
+
+    # Save all camera parameters to .npy files
+    np.savez_compressed(file=calib_file, cam_mtxL=cam_mtxL, cam_mtxR=cam_mtxR, disp_to_depth_mtx=disp_to_depth_mtx,
+                        distL=distL, distR=distR, mapxL=mapxL, mapxR=mapxR, mapyL=mapyL, mapyR=mapyR,
+                        proj_mtxL=proj_mtxL, proj_mtxR=proj_mtxR, rot_mtx=rot_mtx, rot_mtxL=rot_mtxL, rot_mtxR=rot_mtxR,
+                        trasl_mtx=trasl_mtx, valid_ROIL=valid_ROIL, valid_ROIR=valid_ROIR)
+
+    print('Calibration data saved to file')
+
+    # Ask user to plot the images used for calibration with the applied corrections
     while True:
         disp_images = input('Do you want to plot the images used for calibration? [y/n]: ')
         if disp_images not in ['y', 'n']:
@@ -167,56 +202,60 @@ def calibrate(folders: Dict[str, str],
 
     # Plot the images with corners drawn on the chessboard and with calibration applied
     if disp_images == 'y':
-        for img_corners_pair in img_corners_pairs:
+        for i in range(0, len(stereo_img_names)):
+            # for stereo_img_drawn_corners in stereo_img_drawn_corners_list:
+            stereo_img_drawn_corners = stereo_img_drawn_corners_list[i]
             fig, ax = plt.subplots(nrows=2, ncols=2)
+            fig.suptitle(stereo_img_names[i])
             # Plot the original images
-            ax[0][0].imshow(img_corners_pair[1])
-            ax[0][0].set_title('SX frame')
-            ax[0][1].imshow(img_corners_pair[0])
-            ax[0][1].set_title('DX frame')
+            ax[0][0].imshow(stereo_img_drawn_corners[0])
+            ax[0][0].set_title('L frame')
+            ax[0][1].imshow(stereo_img_drawn_corners[1])
+            ax[0][1].set_title('R frame')
 
-            # Apply mapping to images
-            dx_dst = cv2.remap(img_corners_pair[0], dx_mapx, dx_mapy, cv2.INTER_LINEAR)
-            sx_dst = cv2.remap(img_corners_pair[1], sx_mapx, sx_mapy, cv2.INTER_LINEAR)
+            # Remap images using the mapping found after calibration
+            dstL = cv2.remap(stereo_img_drawn_corners[0], mapxL, mapyL, cv2.INTER_LINEAR)
+            dstR = cv2.remap(stereo_img_drawn_corners[1], mapxR, mapyR, cv2.INTER_LINEAR)
 
-            # Crop only the region of interest
-            x, y, w, h = dx_roi
-            dx_dst = dx_dst[y:y + h, x:x + w]
-            x, y, w, h = sx_roi
-            sx_dst = sx_dst[y:y + h, x:x + w]
+            # Crop ROI
+            #valid_ROI = cv2.getValidDisparityROI(valid_ROIL, valid_ROIR, 4, 128, 15)
+            #x, y, w, h = valid_ROI
+            #dstL = dstL[y:y + h, x:x + w]
+            #dstR = dstR[y:y + h, x:x + w]
 
             # Plot the undistorted images
-            ax[1][0].imshow(sx_dst)
-            ax[1][0].set_title('SX frame undistorted')
-            ax[1][1].imshow(dx_dst)
-            ax[1][1].set_title('DX frame undistorted')
+            ax[1][0].imshow(dstL)
+            ax[1][0].set_title('L frame undistorted')
+            ax[1][1].imshow(dstR)
+            ax[1][1].set_title('R frame undistorted')
+
             plt.show()
-    print('Calibration done')
 
 
-def process_stereo_image(img_pair_name: Tuple[str, str],
-                         pattern_size: Tuple[int, int]) -> (np.ndarray, np.ndarray):
+def process_stereo_image(img_name_pair: Tuple[str, str],
+                         pattern_size: Tuple[int, int]) -> (str, np.ndarray, np.ndarray):
     """Processes a right/left pair of images and detects chessboard corners for calibration
-        :param img_pair_name: tuple containing the names of the right and left images, respectively
+        :param img_name_pair: tuple containing the names of the right and left images, respectively
         :param pattern_size: tuple containing the number of internal corners of the chessboard
 
-        :returns corners_pair: tuple containing two NumPy arrays, each representing the corners
-                               of the right and left images"""
-    stereo_img_name = img_pair_name[0].split('/')[-1:]
+        :returns stereo_img_points: tuple containing two NumPy arrays, each representing the corners
+                                    of the right and left images
+        :returns stereo_img_drawn_corners: tuple of stereo images of a chessboard with corners drawn"""
+    stereo_img_name = img_name_pair[0].split('/')[-1:]
     print('Processing image {}'.format(stereo_img_name))
 
     # Process in parallel both images
     with ThreadPoolExecutor(max_workers=2) as executor:
-        future_dx = executor.submit(process_image_thread, img_pair_name[0], pattern_size)
-        future_sx = executor.submit(process_image_thread, img_pair_name[1], pattern_size)
+        futureL = executor.submit(process_image_thread, img_name_pair[0], pattern_size)
+        futureR = executor.submit(process_image_thread, img_name_pair[1], pattern_size)
         # Collect the images with the detected chessboard and the corners, which will be used for calibration
-        dx_corners, dx_img_corners = future_dx.result()
-        sx_corners, sx_img_corners = future_sx.result()
-        corners_pair = (dx_corners, sx_corners)
-        img_corners_pair = (dx_img_corners, sx_img_corners)
+        img_pointsL, img_drawn_cornersL = futureL.result()
+        img_pointsR, img_drawn_cornersR = futureR.result()
+        stereo_img_points = (img_pointsL, img_pointsR)
+        stereo_img_drawn_corners = (img_drawn_cornersL, img_drawn_cornersR)
 
     print('Image {} processed'.format(stereo_img_name))
-    return corners_pair, img_corners_pair
+    return stereo_img_name, stereo_img_points, stereo_img_drawn_corners
 
 
 # noinspection PyUnresolvedReferences
@@ -232,81 +271,147 @@ def process_image_thread(img_name: str,
     # Refine corners position
     term = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_COUNT, 5, 1)
     cv2.cornerSubPix(img, corners, (5, 5), (-1, -1), term)
-    img_corners = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-    cv2.drawChessboardCorners(img_corners, pattern_size, corners, found)
+    img_drawn_corners = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    cv2.drawChessboardCorners(img_drawn_corners, pattern_size, corners, found)
 
-    return corners.reshape(-1, 2), img_corners
+    return corners.reshape(-1, 2), img_drawn_corners
 
 
 # noinspection PyUnresolvedReferences
-def calibrate_single_camera(corners: List[np.ndarray],
-                            pattern_size: Tuple[int, int],
-                            square_length: float,
+def calibrate_single_camera(img_points: List[np.ndarray],
+                            obj_points: List[np.ndarray],
                             camera_size: Tuple[int, int],
-                            calib_folder: str) -> (float, float, np.ndarray):
+                            camera_idx: str) -> (np.ndarray, np.ndarray):
     """Maps coordinates of corners in 2D image to corners in 3D image and calibrates a camera
-        :param corners: list of the chessboard corners detected in the images used for calibration
-        :param pattern_size: size of the chessboard used, expressed in term of internal corners
-        :param square_length: length in mm of the edge of a square of the chessboard
+        :param img_points: list of the image points
+        :param obj_points: list of the object points
         :param camera_size: size, in pixel, of images
-        :param calib_folder: file path in which calibration data will be saved"""
+        :param camera_idx: string representing the label of the camera
 
-    # Prepare object points by obtaining a grid, scaling it by the square edge length and reshaping it
-    pattern_points = np.zeros([pattern_size[0] * pattern_size[1], 3], dtype=np.float32)
-    pattern_points[:, :2] = (np.indices(pattern_size, dtype=np.float32) * square_length).T.reshape(-1, 2)
-
-    # Create lists for 2D and 3D points
-    img_points = []  # 2D points in image plane
-    obj_points = []  # 3D points in real world space
-    for corner_points in corners:
-        img_points.append(corner_points)
-        obj_points.append(pattern_points)
+        :return cam_mtx: camera matrix computed by calibration process
+        :return dist: distortion coefficient of the camera"""
+    print('Calibrating {} camera...'.format(camera_idx))
 
     # Obtain camera parameters, such as camera matrix and rotation/translation vectors
-    rms, camera_matrix, dist_coefs, rvecs, tvecs = cv2.calibrateCamera(obj_points,
-                                                                       img_points,
-                                                                       camera_size,
-                                                                       None,
-                                                                       None)
-    # Compute new optimal camera matrix
-    new_camera_mtx, roi = cv2.getOptimalNewCameraMatrix(camera_matrix, dist_coefs, camera_size, 1, camera_size)
-    # Compute the mapping between undistorted and distorted images
-    mapx, mapy = cv2.initUndistortRectifyMap(camera_matrix, dist_coefs, None, new_camera_mtx, camera_size, 5)
+    rms, cam_mtx, dist, rvecs, tvecs = cv2.calibrateCamera(obj_points,
+                                                           img_points,
+                                                           camera_size,
+                                                           None,
+                                                           None)
+    print('{}: camera calibrated, RMS = {}'.format(camera_idx, str(rms)))
 
-    # Save all camera parameters to .npy files
-    print('Saving calibration data to file...')
-    np.save(file=calib_folder + 'rms',
-            arr=rms,
-            allow_pickle=False)
-    np.save(file=calib_folder + 'camera_matrix',
-            arr=camera_matrix,
-            allow_pickle=False)
-    np.save(file=calib_folder + 'dist_coefs',
-            arr=dist_coefs,
-            allow_pickle=False)
-    np.save(file=calib_folder + 'rvecs',
-            arr=rvecs,
-            allow_pickle=False)
-    np.save(file=calib_folder + 'tvecs',
-            arr=tvecs,
-            allow_pickle=False)
-    np.save(file=calib_folder + 'new_camera_mtx',
-            arr=new_camera_mtx,
-            allow_pickle=False)
-    np.save(file=calib_folder + 'roi',
-            arr=roi,
-            allow_pickle=False)
-    np.save(file=calib_folder + 'mapx',
-            arr=mapx,
-            allow_pickle=False)
-    np.save(file=calib_folder + 'mapy',
-            arr=mapy,
-            allow_pickle=False)
 
-    # Returns mapping
-    return mapx, mapy, roi
+
+    # Returns camera matrix and distortion coefficient
+    return cam_mtx, dist
 
 
 # TODO
-def disp_map():
-    pass
+# noinspection PyUnresolvedReferences
+def disp_map(socks: Dict[str, zmq.Socket],
+             calib_file: str,
+             folders: Dict[str, str]):
+    # Load calibration data
+    calib_data = np.load(calib_file + '.npz')
+    mapxL = calib_data['mapxL']
+    mapyL = calib_data['mapyL']
+    mapxR = calib_data['mapxR']
+    mapyR = calib_data['mapyR']
+    valid_ROIL = calib_data['valid_ROIL']
+    valid_ROIR = calib_data['valid_ROIR']
+
+    # Create stereo matcher
+    range_disp = 6
+    min_disp = 0
+    num_disp = 16 * range_disp - min_disp
+    block_size = 20
+    window_size = 7
+    stereo_matcher = cv2.StereoSGBM_create(minDisparity=min_disp,
+                                           numDisparities=num_disp,
+                                           blockSize=block_size)
+                                           #P1=8 * 3 * window_size ** 2,
+                                           #P2=32 * 3 * window_size ** 2,
+                                           #disp12MaxDiff=1,
+                                           #uniquenessRatio=10,
+                                           #speckleWindowSize=100,
+                                           #speckleRange=32)
+
+    # Receive confirmation by cameras
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        executor.submit(socks['L'].recv_string)
+        executor.submit(socks['R'].recv_string)
+    print('Both cameras are ready')
+    # Synchronize cameras
+    concurrent_send(socks, msg='Start')
+
+    # Get frames from both cameras
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futureL = executor.submit(recv_frame, socks['L'])
+        futureR = executor.submit(recv_frame, socks['R'])
+        frameL = futureL.result()
+        frameR = futureR.result()
+
+    # Undistort and rectify
+    dstL = cv2.remap(frameL, mapxL, mapyL, cv2.INTER_NEAREST)
+    dstR = cv2.remap(frameR, mapxR, mapyR, cv2.INTER_NEAREST)
+    # Compute disparity and valid ROI
+    disparity = stereo_matcher.compute(dstL, dstR)
+    valid_ROI = cv2.getValidDisparityROI(valid_ROIL, valid_ROIR, min_disp, num_disp, window_size)
+
+    # Crop valid ROI
+    x, y, w, h = valid_ROI
+    disparity = disparity[y:y + h, x:x + w]
+
+    cv2.imshow('L frame', dstL)
+    cv2.imshow('R frame', dstR)
+    plt.imshow(disparity, 'gray')
+    plt.show()
+
+    '''''
+    # Receive confirmation by cameras
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        executor.submit(socks['L'].recv_string)
+        executor.submit(socks['R'].recv_string)
+    print('Both cameras are ready')
+    # Synchronize cameras
+    concurrent_send(socks, msg='Start')
+
+    while True:
+        # Get frames from both cameras
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futureL = executor.submit(recv_frame, socks['L'])
+            futureR = executor.submit(recv_frame, socks['R'])
+            frameL = futureL.result()
+            frameR = futureR.result()
+
+        # Undistort and rectify
+        dstL = cv2.remap(frameL, mapxL, mapyL, cv2.INTER_NEAREST)
+        dstR = cv2.remap(frameR, mapxR, mapyR, cv2.INTER_NEAREST)
+        # Compute disparity and valid ROI
+        disparity = stereo_matcher.compute(dstL, dstR).astype(np.float32) / 16.0
+        valid_ROI = cv2.getValidDisparityROI(valid_ROIL, valid_ROIR, min_disp, num_disp, window_size)
+
+        # Crop valid ROI
+        x, y, w, h = valid_ROI
+        disparity = disparity[y:y + h, x:x + w]
+        disp = cv2.normalize(disparity, disparity, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            executor.submit(cv2.imshow, 'L frame', dstL)
+            executor.submit(cv2.imshow, 'R frame', dstR)
+        cv2.imshow('Disparity map', disp)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            concurrent_send(socks, '\0')
+            break
+
+    # Try to read the last frames, if any
+    while True:
+        try:
+            socks['L'].recv_string(flags=zmq.NOBLOCK)
+            socks['R'].recv_string(flags=zmq.NOBLOCK)
+            break
+        except zmq.Again:
+            pass
+    '''''
+
+    cv2.destroyAllWindows()

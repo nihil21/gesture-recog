@@ -3,6 +3,7 @@
     <words>
       <w>bufsize</w>
       <w>calib</w>
+      <w>coef</w>
       <w>coefs</w>
       <w>disp</w>
       <w>imgs</w>
@@ -12,8 +13,11 @@
       <w>mapy</w>
       <w>msglen</w>
       <w>picamera</w>
+      <w>proj</w>
       <w>rvecs</w>
+      <w>trasl</w>
       <w>tvecs</w>
+      <w>undistort</w>
       <w>webcam</w>
       <w>xbytes</w>
     </words>

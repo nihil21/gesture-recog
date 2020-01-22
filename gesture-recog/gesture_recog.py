@@ -4,12 +4,12 @@ from utils.calibration_tools import capture_images, calibrate, disp_map
 from utils.network_tools import concurrent_send
 
 # Ports for both cameras
-DX_PORT = 8000
-SX_PORT = 8001
+L_PORT = 8000
+R_PORT = 8001
 
 # Folders to store images for calibration
-DX_IMG_FOLDER = "../calibration-images/dx/"
-SX_IMG_FOLDER = "../calibration-images/sx/"
+L_IMG_FOLDER = "../calibration-images/L/"
+R_IMG_FOLDER = "../calibration-images/R/"
 
 # Chessboard size
 PATTERN_SIZE = (8, 5)
@@ -18,8 +18,7 @@ PATTERN_SIZE = (8, 5)
 SQUARE_LEN = 26.5  # mm
 
 # Folders to store calibration data
-DX_CALIB_FOLDER = "../calibration-data/dx/"
-SX_CALIB_FOLDER = "../calibration-data/sx/"
+CALIB_FILE = "../calibration-data/calib"
 
 
 # noinspection PyUnresolvedReferences
@@ -37,13 +36,13 @@ def create_socket(context: zmq.Context, tcp_port: int) -> zmq.Socket:
     return sock
 
 
-def accept_client_thread(sock: zmq.Socket, sock_idx: str) -> None:
-    """Confirms connection to client by sending a message
+def accept_slave_thread(sock: zmq.Socket, camera_idx: str) -> None:
+    """Confirms connection to slave by sending a message
         :param sock: the zmq socket
-        :param sock_idx: the index of the client ('DX'/'SX')"""
+        :param camera_idx: the index of the camera attached to the slave ('L'/'R')"""
 
-    sock.send_string('Connection established with server')
-    print('Connection established with client {}'.format(sock_idx))
+    sock.send_string('Connection established with master')
+    print('Connection established with slave {}'.format(camera_idx))
 
 
 def user_input() -> int:
@@ -77,20 +76,19 @@ def main():
     try:
         # Set up zmq context and sockets PAIR
         context = zmq.Context()
-        socks = {'DX': create_socket(context, DX_PORT), 'SX': create_socket(context, SX_PORT)}
-        print('Waiting on ports {} and {}...'.format(DX_PORT, SX_PORT))
+        socks = {'L': create_socket(context, L_PORT), 'R': create_socket(context, R_PORT)}
+        print('Waiting on ports {} and {}...'.format(L_PORT, R_PORT))
 
         # Set up other environment variables
-        img_folders = {'DX': DX_IMG_FOLDER, 'SX': SX_IMG_FOLDER}
-        calib_folders = {'DX': DX_CALIB_FOLDER, 'SX': SX_CALIB_FOLDER}
+        img_folders = {'L': L_IMG_FOLDER, 'R': R_IMG_FOLDER}
 
         # Accept connections in a thread pool
         with ThreadPoolExecutor() as executor:
-            executor.submit(accept_client_thread, socks['DX'], 'DX')
-            executor.submit(accept_client_thread, socks['SX'], 'SX')
+            executor.submit(accept_slave_thread, socks['L'], 'L')
+            executor.submit(accept_slave_thread, socks['R'], 'R')
 
-        # Confirm connection to both clients by sending a message
-        msg = 'Connection established with both clients'
+        # Confirm connection to both slaves by sending a message
+        msg = 'Connection established with both slaves'
         print(msg)
         concurrent_send(socks, msg)
 
@@ -99,9 +97,9 @@ def main():
             # Display action menu and ask for user input
             sel = user_input()
 
-            # Tell clients to prepare for streaming, by sending user's selection,
+            # Tell slaves to prepare for streaming, by sending user's selection,
             # unless he chose calibration (done server-side only)
-            if sel != 2 and sel != 3:
+            if sel != 2:
                 concurrent_send(socks, str(sel))
             if sel == 4:
                 break
@@ -110,9 +108,9 @@ def main():
             if sel == 1:
                 capture_images(socks, img_folders)
             elif sel == 2:
-                calibrate(img_folders, PATTERN_SIZE, SQUARE_LEN, calib_folders)
+                calibrate(img_folders, PATTERN_SIZE, SQUARE_LEN, CALIB_FILE)
             elif sel == 3:
-                disp_map()
+                disp_map(socks, CALIB_FILE, img_folders)
     except KeyboardInterrupt:
         print('')
         print('Enforcing termination manually')

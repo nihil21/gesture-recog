@@ -8,17 +8,17 @@ try:
     from picamera.array import PiRGBArray
     from picamera import PiCamera
     print("PiCamera will be used.")
-    webcam = False
+    WEBCAM = False
 except OSError:
     print("PiCamera not supported by the system, webcam will be used.")
-    webcam = True
+    WEBCAM = True
 
 # Camera size
 CAMERA_SIZE = (640, 480)
 
 
 # noinspection PyUnresolvedReferences
-def stream_from_picamera(sock: zmq.Socket) -> None:
+def stream_from_picamera(sock: zmq.Socket, flip: bool) -> None:
     print('Streaming from PiCamera...')
 
     # Initialize camera
@@ -30,13 +30,17 @@ def stream_from_picamera(sock: zmq.Socket) -> None:
     # Camera warm-up
     time.sleep(0.1)
 
-    # Tell the server that the camera is ready
+    # Tell the master that the camera is ready
     sock.send_string('Ready')
     print(sock.recv_string())
 
     for capture in camera.capture_continuous(raw_capture, format='bgr', use_video_port=True):
         # Grab raw NumPy array representing the frame
         frame = capture.array
+
+        # Flip image, if specified
+        if flip:
+            frame = cv2.flip(frame, 0)
 
         # Send the frame as a base64 string
         encoded, buffer = cv2.imencode('.jpg', frame)
@@ -58,16 +62,18 @@ def stream_from_picamera(sock: zmq.Socket) -> None:
 
 
 # noinspection PyUnresolvedReferences
-def stream_from_webcam(sock: zmq.Socket) -> None:
+def stream_from_webcam(sock: zmq.Socket, flip: bool) -> None:
     print('Streaming from webcam...')
 
     # Initialize camera
     video_capture = cv2.VideoCapture(0)
+    video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_SIZE[0])
+    video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_SIZE[1])
 
     # Camera warm-up
     time.sleep(0.1)
 
-    # Tell the server that the camera is ready
+    # Tell the master that the camera is ready
     sock.send_string('Ready')
     print(sock.recv_string())
 
@@ -75,6 +81,10 @@ def stream_from_webcam(sock: zmq.Socket) -> None:
         # Grab frame from video
         ret, frame = video_capture.read()
         frame = cv2.resize(frame, CAMERA_SIZE)
+
+        # Flip image, if specified
+        if flip:
+            frame = cv2.flip(frame, 0)
 
         # Send the frame as a base64 string
         encoded, buffer = cv2.imencode('.jpg', frame)
@@ -93,11 +103,76 @@ def stream_from_webcam(sock: zmq.Socket) -> None:
     video_capture.release()
 
 
+# noinspection PyUnresolvedReferences
+def shot_from_picamera(sock: zmq.Socket, flip: bool) -> None:
+    print('Taking a picture from PiCamera...')
+
+    # Initialize camera
+    camera = PiCamera()
+    camera.resolution = CAMERA_SIZE
+    camera.framerate = 32
+    raw_capture = PiRGBArray(camera, size=CAMERA_SIZE)
+
+    # Camera warm-up
+    time.sleep(0.1)
+
+    # Tell the master that the camera is ready
+    sock.send_string('Ready')
+    print(sock.recv_string())
+
+    camera.capture(raw_capture, format='bgr')
+    # Grab raw NumPy array representing the frame
+    frame = raw_capture.array
+
+    # Flip image, if specified
+    if flip:
+        frame = cv2.flip(frame, 0)
+
+    # Send the frame as a base64 string
+    encoded, buffer = cv2.imencode('.jpg', frame)
+    jpg_as_text = base64.b64encode(buffer)
+    sock.send(jpg_as_text)
+
+
+# noinspection PyUnresolvedReferences
+def shot_from_webcam(sock: zmq.Socket, flip: bool) -> None:
+    print('Taking a picture from webcam...')
+
+    # Initialize camera
+    video_capture = cv2.VideoCapture(0)
+    video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_SIZE[0])
+    video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_SIZE[1])
+
+    # Camera warm-up
+    time.sleep(0.1)
+
+    # Tell the master that the camera is ready
+    sock.send_string('Ready')
+    print(sock.recv_string())
+
+    # Grab frame from video
+    ret, frame = video_capture.read()
+    frame = cv2.resize(frame, CAMERA_SIZE)
+
+    # Flip image, if specified
+    if flip:
+        frame = cv2.flip(frame, 0)
+
+    # Send the frame as a base64 string
+    encoded, buffer = cv2.imencode('.jpg', frame)
+    jpg_as_text = base64.b64encode(buffer)
+    sock.send(jpg_as_text)
+
+    # Release resource
+    video_capture.release()
+
+
 def main():
     # Construct argument parser and add arguments to it
     ap = argparse.ArgumentParser()
-    ap.add_argument("-i", "--ip_address", required=True, help="hostname of the server")
-    ap.add_argument("-p", "--port", required=True, help="port on which the client connects to server")
+    ap.add_argument("-i", "--ip_address", required=True, help="hostname of the master")
+    ap.add_argument("-p", "--port", required=True, help="port on which the slave connects to master")
+    ap.add_argument("-f", "--flip", action="store_true", help="if set, image is flipped before it is sent to master")
     args = vars(ap.parse_args())
 
     # Argument reading and check
@@ -109,11 +184,12 @@ def main():
         sys.exit("Argument 'port' must be an integer.")
     if not 1024 <= port <= 65535:
         sys.exit("Argument 'port' must within range [1024, 65535].")
+    flip = args['flip']
 
     context = None
     sock = None
     try:
-        # Connect to server
+        # Connect to master
         context = zmq.Context()
         # noinspection PyUnresolvedReferences
         sock = context.socket(zmq.PAIR)
@@ -121,10 +197,10 @@ def main():
         sock.setsockopt(zmq.LINGER, 0)
         sock.connect("tcp://{}:{}".format(ipaddr, port))
 
-        # Confirm connection of the client itself
+        # Confirm connection of the slave itself
         print(sock.recv_string())
 
-        # Confirm connection of the other client
+        # Confirm connection of the other slave
         print(sock.recv_string())
 
         # User input cycle
@@ -132,11 +208,15 @@ def main():
             print('Waiting for user input...')
             # Read user's choice
             sel = int(sock.recv_string())
+            if sel == 1:
+                # Start streaming
+                stream = stream_from_picamera if not WEBCAM else stream_from_webcam
+                stream(sock, flip)
+            elif sel == 3:
+                shot = shot_from_picamera if not WEBCAM else shot_from_webcam
+                shot(sock, flip)
             if sel == 4:
                 break
-            # Start streaming
-            stream = stream_from_picamera if not webcam else stream_from_webcam
-            stream(sock)
     except KeyboardInterrupt:
         print('')
         print('Enforcing termination manually')
