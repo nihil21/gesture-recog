@@ -4,7 +4,7 @@ import zmq
 import glob
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, Tuple, List, Union
+from typing import Dict, Tuple, List
 from matplotlib import pyplot as plt
 from exceptions.error import ChessboardNotFoundError
 from utils.network_tools import concurrent_send, recv_frame
