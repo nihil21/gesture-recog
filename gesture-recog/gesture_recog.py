@@ -110,7 +110,7 @@ def main():
             elif sel == 2:
                 calibrate(img_folders, PATTERN_SIZE, SQUARE_LEN, CALIB_FILE)
             elif sel == 3:
-                disp_map(socks, CALIB_FILE, img_folders)
+                disp_map(socks, CALIB_FILE)
     except KeyboardInterrupt:
         print('')
         print('Enforcing termination manually')

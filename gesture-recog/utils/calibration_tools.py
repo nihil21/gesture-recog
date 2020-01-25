@@ -4,7 +4,7 @@ import zmq
 import glob
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple, List, Union
 from matplotlib import pyplot as plt
 from exceptions.error import ChessboardNotFoundError
 from utils.network_tools import concurrent_send, recv_frame
@@ -300,8 +300,6 @@ def calibrate_single_camera(img_points: List[np.ndarray],
                                                            None)
     print('{}: camera calibrated, RMS = {}'.format(camera_idx, str(rms)))
 
-
-
     # Returns camera matrix and distortion coefficient
     return cam_mtx, dist
 
@@ -309,8 +307,7 @@ def calibrate_single_camera(img_points: List[np.ndarray],
 # TODO
 # noinspection PyUnresolvedReferences
 def disp_map(socks: Dict[str, zmq.Socket],
-             calib_file: str,
-             folders: Dict[str, str]):
+             calib_file: str):
     # Load calibration data
     calib_data = np.load(calib_file + '.npz')
     mapxL = calib_data['mapxL']
@@ -321,20 +318,18 @@ def disp_map(socks: Dict[str, zmq.Socket],
     valid_ROIR = calib_data['valid_ROIR']
 
     # Create stereo matcher
-    range_disp = 6
+    range_disp = 4
     min_disp = 0
     num_disp = 16 * (range_disp - min_disp)
-    block_size = 20
-    window_size = 7
-    stereo_matcher = cv2.StereoSGBM_create(minDisparity=min_disp,
-                                           numDisparities=num_disp,
-                                           blockSize=block_size)
-                                           #P1=8 * 3 * window_size ** 2,
-                                           #P2=32 * 3 * window_size ** 2,
-                                           #disp12MaxDiff=1,
-                                           #uniquenessRatio=10,
-                                           #speckleWindowSize=100,
-                                           #speckleRange=32)
+    window_size = 9
+
+    # Create and configure stereo matcher
+    stereo_matcher = cv2.StereoBM_create(numDisparities=num_disp, blockSize=window_size)  # 64, 9
+    stereo_matcher.setPreFilterCap(63)
+    stereo_matcher.setPreFilterSize(15)
+    stereo_matcher.setROI1(tuple(valid_ROIL))
+    stereo_matcher.setROI2(tuple(valid_ROIR))
+    stereo_matcher.setTextureThreshold(500)
 
     # Receive confirmation by cameras
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -348,26 +343,31 @@ def disp_map(socks: Dict[str, zmq.Socket],
     with ThreadPoolExecutor(max_workers=2) as executor:
         futureL = executor.submit(recv_frame, socks['L'])
         futureR = executor.submit(recv_frame, socks['R'])
-        frameL = futureL.result()
-        frameR = futureR.result()
+        frameL = cv2.cvtColor(futureL.result(), cv2.COLOR_BGR2GRAY)
+        frameR = cv2.cvtColor(futureR.result(), cv2.COLOR_BGR2GRAY)
 
     # Undistort and rectify
-    dstL = cv2.remap(frameL, mapxL, mapyL, cv2.INTER_NEAREST)
-    dstR = cv2.remap(frameR, mapxR, mapyR, cv2.INTER_NEAREST)
+    dstL = cv2.remap(frameL, mapxL, mapyL, cv2.INTER_LINEAR)
+    dstR = cv2.remap(frameR, mapxR, mapyR, cv2.INTER_LINEAR)
+
     # Compute disparity and valid ROI
     disparity = stereo_matcher.compute(dstL, dstR)
-    valid_ROI = cv2.getValidDisparityROI(valid_ROIL, valid_ROIR, min_disp, num_disp, window_size)
+    disp = cv2.normalize(disparity, disparity, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+    disp_color = cv2.applyColorMap(disp, cv2.COLORMAP_JET)
 
-    # Crop valid ROI
-    x, y, w, h = valid_ROI
-    disparity = disparity[y:y + h, x:x + w]
+    #cv2.imwrite('L.jpg', dstL)
+    #cv2.imwrite('R.jpg', dstR)
+    #cv2.imwrite('disp.jpg', disp)
+    #cv2.imwrite('disp_color.jpg', disp_color)
 
     cv2.imshow('L frame', dstL)
     cv2.imshow('R frame', dstR)
-    plt.imshow(disparity, 'gray')
-    plt.show()
+    cv2.imshow('Disparity', disp)
+    cv2.imshow('Disparity Color', disp_color)
+    cv2.waitKey(0)
 
     '''''
+    TODO: real-time disparity map
     # Receive confirmation by cameras
     with ThreadPoolExecutor(max_workers=2) as executor:
         executor.submit(socks['L'].recv_string)
@@ -383,18 +383,15 @@ def disp_map(socks: Dict[str, zmq.Socket],
             futureR = executor.submit(recv_frame, socks['R'])
             frameL = futureL.result()
             frameR = futureR.result()
-
+            
         # Undistort and rectify
-        dstL = cv2.remap(frameL, mapxL, mapyL, cv2.INTER_NEAREST)
-        dstR = cv2.remap(frameR, mapxR, mapyR, cv2.INTER_NEAREST)
-        # Compute disparity and valid ROI
-        disparity = stereo_matcher.compute(dstL, dstR).astype(np.float32) / 16.0
-        valid_ROI = cv2.getValidDisparityROI(valid_ROIL, valid_ROIR, min_disp, num_disp, window_size)
+        dstL = cv2.remap(frameL, mapxL, mapyL, cv2.INTER_LINEAR)
+        dstR = cv2.remap(frameR, mapxR, mapyR, cv2.INTER_LINEAR)
 
-        # Crop valid ROI
-        x, y, w, h = valid_ROI
-        disparity = disparity[y:y + h, x:x + w]
+        # Compute disparity and valid ROI
+        disparity = stereo_matcher.compute(dstL, dstR)
         disp = cv2.normalize(disparity, disparity, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+        disp_color = cv2.applyColorMap(disp, cv2.COLORMAP_JET)
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             executor.submit(cv2.imshow, 'L frame', dstL)
