@@ -3,7 +3,7 @@ import numpy as np
 import cv2
 import base64
 from concurrent.futures.thread import ThreadPoolExecutor
-from typing import Dict
+from typing import Dict, Tuple
 
 
 def concurrent_send(socks: Dict[str, zmq.Socket], msg: str) -> None:
@@ -16,10 +16,26 @@ def concurrent_send(socks: Dict[str, zmq.Socket], msg: str) -> None:
 
 
 # noinspection PyUnresolvedReferences
-def recv_frame(sock: zmq.Socket) -> np.ndarray:
+def recv_frame(sock: zmq.Socket, camera_idx: str) -> Tuple[np.ndarray, str]:
     # Read frame as a base64 string and return it
     serial_frame = sock.recv_string()
     buffer = base64.b64decode(serial_frame)
     frame = cv2.imdecode(np.fromstring(buffer, dtype=np.uint8), 1)
+    return frame, camera_idx
 
-    return frame
+
+def concurrent_flush(socks: Dict[str, zmq.Socket]) -> None:
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        executor.submit(flush_frames, socks['L'], 'L')
+        executor.submit(flush_frames, socks['R'], 'R')
+
+
+# noinspection PyUnresolvedReferences
+def flush_frames(sock: zmq.Socket, camera_idx: str) -> None:
+    while True:
+        try:
+            sock.recv_string(flags=zmq.NOBLOCK)
+            print('{}: socket flushed'.format(camera_idx))
+            break
+        except zmq.Again:
+            pass

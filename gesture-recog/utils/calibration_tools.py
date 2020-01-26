@@ -7,91 +7,102 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Tuple, List
 from matplotlib import pyplot as plt
 from exceptions.error import ChessboardNotFoundError
-from utils.network_tools import concurrent_send, recv_frame
+from utils.network_tools import concurrent_send, recv_frame, concurrent_flush
 
 
+# noinspection PyUnresolvedReferences
 def capture_images(socks: Dict[str, zmq.Socket],
-                   folders: Dict[str, str]) -> None:
+                   folders: Dict[str, str],
+                   camera_resolution: Tuple[int, int]) -> None:
     """Function which coordinates the capture of images from both cameras
         :param socks: dictionary containing the two zmq sockets for the two slaves, identified by a label
         :param folders: dictionary containing the folder in which images will be saved, identified by a label"""
     print('Collecting images of a chessboard for calibration...')
 
-    # Receive confirmation by the slave
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    # Wait for ready signal from cameras
+    with ThreadPoolExecutor() as executor:
         executor.submit(socks['L'].recv_string)
         executor.submit(socks['R'].recv_string)
-
-    # Receive frames by both slaves using threads
-    print("Both cameras are ready")
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        executor.submit(capture_images_thread, socks['L'], folders['L'], 'L')
-        executor.submit(capture_images_thread, socks['R'], folders['R'], 'R')
-    print('Images collected')
-
-
-# noinspection PyUnresolvedReferences
-def capture_images_thread(sock: zmq.Socket,
-                          folder: str,
-                          camera_idx: str) -> None:
-    """Captures a series of images from the remote camera
-        :param sock: zmq socket to communicate with the remote camera
-        :param folder: path of the folder in which images will be saved
-        :param camera_idx: index of the socket ('L'/'R')"""
-    # Send signal to synchronize both cameras
-    sock.send_string("Start signal received")
 
     # Initialize variables for countdown
     n_pics, tot_pics = 0, 30
     n_sec, tot_sec = 0, 4
     str_sec = '4321'
+
+    # Synchronize cameras with a start signal
+    concurrent_send(socks, '\1')
+
+    # Save start time
     start_time = datetime.now()
-
-    # Loop until 'tot_pics' images are collected
     while n_pics < tot_pics:
-        frame = recv_frame(sock)
+        # Get frames from both cameras
+        with ThreadPoolExecutor() as executor:
+            futures = [executor.submit(recv_frame, socks['L'], 'L'),
+                       executor.submit(recv_frame, socks['R'], 'R')]
+            for future in as_completed(futures):
+                frame, camera_idx = future.result()
+                if camera_idx == 'L':
+                    frameL = cv2.resize(frame, camera_resolution)
+                else:
+                    frameR = cv2.resize(frame, camera_resolution)
 
-        # Display counter on screen before saving frame
-        if n_sec < tot_sec:
-            # Draw on screen the current remaining seconds
-            frame = cv2.putText(img=frame,
-                                text=str_sec[n_sec],
-                                org=(int(40), int(80)),
-                                fontFace=cv2.FONT_HERSHEY_DUPLEX,
-                                fontScale=3,
-                                color=(255, 255, 255),
-                                thickness=5,
-                                lineType=cv2.LINE_AA)
+            # Display counter on screen before saving frame
+            if n_sec < tot_sec:
+                # Draw on screen the current remaining seconds
+                cv2.putText(img=frameL,
+                            text=str_sec[n_sec],
+                            org=(int(10), int(40)),
+                            fontFace=cv2.FONT_HERSHEY_DUPLEX,
+                            fontScale=1,
+                            color=(255, 255, 255),
+                            thickness=3,
+                            lineType=cv2.LINE_AA)
+                # Draw on screen the current remaining pictures
+                cv2.putText(img=frameR,
+                            text='{:d}/{:d}'.format(n_pics, tot_pics),
+                            org=(int(10), int(40)),
+                            fontFace=cv2.FONT_HERSHEY_DUPLEX,
+                            fontScale=1,
+                            color=(255, 255, 255),
+                            thickness=3,
+                            lineType=cv2.LINE_AA)
 
-            # If time elapsed is greater than one second, update 'n_sec'
-            time_elapsed = (datetime.now() - start_time).total_seconds()
-            if time_elapsed >= 1:
-                n_sec += 1
-                start_time = datetime.now()
-        else:
-            # When countdown ends, save grayscale image to file
-            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            path = folder
-            cv2.imwrite(path + '{:02d}'.format(n_pics) + '.jpg', gray_frame)
-            n_pics += 1
-            n_sec = 0
-            print('{}: {:d}/{:d} images collected'.format(camera_idx, n_pics, tot_pics))
+                # If time elapsed is greater than one second, update 'n_sec'
+                time_elapsed = (datetime.now() - start_time).total_seconds()
+                if time_elapsed >= 1:
+                    n_sec += 1
+                    start_time = datetime.now()
+            else:
+                # When countdown ends, save grayscale image to file
+                gray_frameL = cv2.cvtColor(frameL, cv2.COLOR_BGR2GRAY)
+                gray_frameR = cv2.cvtColor(frameR, cv2.COLOR_BGR2GRAY)
+                pathL = folders['L']
+                pathR = folders['R']
+                cv2.imwrite(pathL + '{:02d}'.format(n_pics) + '.jpg', gray_frameL)
+                cv2.imwrite(pathR + '{:02d}'.format(n_pics) + '.jpg', gray_frameR)
+                # Update counters
+                n_pics += 1
+                n_sec = 0
+                # Flush sockets to re-synchronize cameras
+                concurrent_flush(socks)
 
-        cv2.imshow('{} frame'.format(camera_idx), frame)
-        cv2.waitKey(1)  # invocation of non-blocking 'waitKey', required by OpenCV after 'imshow'
-        if n_pics == tot_pics:
-            # If enough images are collected, the termination signal is sent to the slave
-            sock.send_string('\0')
+                print('{:d}/{:d} images collected'.format(n_pics, tot_pics))
+            # Display side by side the frames
+            frames = np.hstack((frameL, frameR))
+            cv2.imshow('Left and right frames', frames)
 
-    # Try to read the last frames, if any
-    while True:
-        try:
-            sock.recv_string(flags=zmq.NOBLOCK)
-            break
-        except zmq.Again:
-            pass
+            # If 'q' is pressed, or enough images are collected,
+            # termination signal is sent to the slaves and streaming ends
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                concurrent_send(socks, '\0')
+                break
+            if n_pics == tot_pics:
+                concurrent_send(socks, '\0')
 
     cv2.destroyAllWindows()
+    # Flush the sockets
+    concurrent_flush(socks)
+    print('Images collected')
 
 
 # noinspection PyUnresolvedReferences
@@ -217,12 +228,6 @@ def calibrate(folders: Dict[str, str],
             dstL = cv2.remap(stereo_img_drawn_corners[0], mapxL, mapyL, cv2.INTER_LINEAR)
             dstR = cv2.remap(stereo_img_drawn_corners[1], mapxR, mapyR, cv2.INTER_LINEAR)
 
-            # Crop ROI
-            #valid_ROI = cv2.getValidDisparityROI(valid_ROIL, valid_ROIR, 4, 128, 15)
-            #x, y, w, h = valid_ROI
-            #dstL = dstL[y:y + h, x:x + w]
-            #dstR = dstR[y:y + h, x:x + w]
-
             # Plot the undistorted images
             ax[1][0].imshow(dstL)
             ax[1][0].set_title('L frame undistorted')
@@ -307,7 +312,8 @@ def calibrate_single_camera(img_points: List[np.ndarray],
 # TODO
 # noinspection PyUnresolvedReferences
 def disp_map(socks: Dict[str, zmq.Socket],
-             calib_file: str):
+             calib_file: str,
+             camera_resolution: Tuple[int, int]):
     # Load calibration data
     calib_data = np.load(calib_file + '.npz')
     mapxL = calib_data['mapxL']
@@ -318,97 +324,66 @@ def disp_map(socks: Dict[str, zmq.Socket],
     valid_ROIR = calib_data['valid_ROIR']
 
     # Create stereo matcher
-    range_disp = 4
-    min_disp = 0
-    num_disp = 16 * (range_disp - min_disp)
-    window_size = 9
+    SWS = 9
+    MDS = -30
+    NOD = 160
+    PFS = 5
+    PFC = 63
+    TTH = 500
+    UR = 1
+    SR = 14
+    SPWS = 100
 
     # Create and configure stereo matcher
-    stereo_matcher = cv2.StereoBM_create(numDisparities=num_disp, blockSize=window_size)  # 64, 9
-    stereo_matcher.setPreFilterCap(63)
-    stereo_matcher.setPreFilterSize(15)
+    stereo_matcher = cv2.StereoBM_create(numDisparities=NOD, blockSize=SWS)
+    stereo_matcher.setMinDisparity(MDS)
+    stereo_matcher.setPreFilterSize(PFS)
+    stereo_matcher.setPreFilterCap(PFC)
+    stereo_matcher.setTextureThreshold(TTH)
+    stereo_matcher.setUniquenessRatio(UR)
+    stereo_matcher.setSpeckleRange(SR)
+    stereo_matcher.setSpeckleWindowSize(SPWS)
     stereo_matcher.setROI1(tuple(valid_ROIL))
     stereo_matcher.setROI2(tuple(valid_ROIR))
-    stereo_matcher.setTextureThreshold(500)
 
     # Receive confirmation by cameras
     with ThreadPoolExecutor(max_workers=2) as executor:
         executor.submit(socks['L'].recv_string)
         executor.submit(socks['R'].recv_string)
-    print('Both cameras are ready')
-    # Synchronize cameras
-    concurrent_send(socks, msg='Start')
 
-    # Get frames from both cameras
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futureL = executor.submit(recv_frame, socks['L'])
-        futureR = executor.submit(recv_frame, socks['R'])
-        frameL = cv2.cvtColor(futureL.result(), cv2.COLOR_BGR2GRAY)
-        frameR = cv2.cvtColor(futureR.result(), cv2.COLOR_BGR2GRAY)
-
-    # Undistort and rectify
-    dstL = cv2.remap(frameL, mapxL, mapyL, cv2.INTER_LINEAR)
-    dstR = cv2.remap(frameR, mapxR, mapyR, cv2.INTER_LINEAR)
-
-    # Compute disparity and valid ROI
-    disparity = stereo_matcher.compute(dstL, dstR)
-    disp = cv2.normalize(disparity, disparity, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-    disp_color = cv2.applyColorMap(disp, cv2.COLORMAP_JET)
-
-    #cv2.imwrite('L.jpg', dstL)
-    #cv2.imwrite('R.jpg', dstR)
-    #cv2.imwrite('disp.jpg', disp)
-    #cv2.imwrite('disp_color.jpg', disp_color)
-
-    cv2.imshow('L frame', dstL)
-    cv2.imshow('R frame', dstR)
-    cv2.imshow('Disparity', disp)
-    cv2.imshow('Disparity Color', disp_color)
-    cv2.waitKey(0)
-
-    '''''
-    TODO: real-time disparity map
-    # Receive confirmation by cameras
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        executor.submit(socks['L'].recv_string)
-        executor.submit(socks['R'].recv_string)
-    print('Both cameras are ready')
-    # Synchronize cameras
-    concurrent_send(socks, msg='Start')
+    # Synchronize cameras with a start signal
+    concurrent_send(socks, msg='\1')
 
     while True:
         # Get frames from both cameras
         with ThreadPoolExecutor(max_workers=2) as executor:
-            futureL = executor.submit(recv_frame, socks['L'])
-            futureR = executor.submit(recv_frame, socks['R'])
-            frameL = futureL.result()
-            frameR = futureR.result()
-            
+            futures = [executor.submit(recv_frame, socks['L'], 'L'),
+                       executor.submit(recv_frame, socks['R'], 'R')]
+            for future in as_completed(futures):
+                frame, camera_idx = future.result()
+                if camera_idx == 'L':
+                    frameL = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), camera_resolution)
+                else:
+                    frameR = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), camera_resolution)
+
         # Undistort and rectify
         dstL = cv2.remap(frameL, mapxL, mapyL, cv2.INTER_LINEAR)
         dstR = cv2.remap(frameR, mapxR, mapyR, cv2.INTER_LINEAR)
 
-        # Compute disparity and valid ROI
+        # Compute disparity
         disparity = stereo_matcher.compute(dstL, dstR)
-        disp = cv2.normalize(disparity, disparity, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-        disp_color = cv2.applyColorMap(disp, cv2.COLORMAP_JET)
+        disp_gray = cv2.normalize(disparity, disparity, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+        disp_color = cv2.applyColorMap(disp_gray, cv2.COLORMAP_JET)
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            executor.submit(cv2.imshow, 'L frame', dstL)
-            executor.submit(cv2.imshow, 'R frame', dstR)
-        cv2.imshow('Disparity map', disp)
+        frames = np.hstack((dstL, dstR))
+
+        cv2.imshow('Left and right frame', frames)
+        cv2.imshow('Disparity', disp_gray)
+        cv2.imshow('Disparity Color', disp_color)
+
         if cv2.waitKey(1) & 0xFF == ord('q'):
             concurrent_send(socks, '\0')
             break
 
-    # Try to read the last frames, if any
-    while True:
-        try:
-            socks['L'].recv_string(flags=zmq.NOBLOCK)
-            socks['R'].recv_string(flags=zmq.NOBLOCK)
-            break
-        except zmq.Again:
-            pass
-    '''''
-
     cv2.destroyAllWindows()
+    concurrent_flush(socks)

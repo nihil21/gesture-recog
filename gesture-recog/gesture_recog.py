@@ -20,6 +20,9 @@ SQUARE_LEN = 26.5  # mm
 # Folders to store calibration data
 CALIB_FILE = "../calibration-data/calib"
 
+# Camera size
+CAMERA_RESOLUTION = (640, 480)
+
 
 # noinspection PyUnresolvedReferences
 def create_socket(context: zmq.Context, tcp_port: int) -> zmq.Socket:
@@ -106,11 +109,11 @@ def main():
 
             # Invoke the corresponding function
             if sel == 1:
-                capture_images(socks, img_folders)
+                capture_images(socks, img_folders, CAMERA_RESOLUTION)
             elif sel == 2:
                 calibrate(img_folders, PATTERN_SIZE, SQUARE_LEN, CALIB_FILE)
             elif sel == 3:
-                disp_map(socks, CALIB_FILE)
+                disp_map(socks, CALIB_FILE, CAMERA_RESOLUTION)
     except KeyboardInterrupt:
         print('')
         print('Enforcing termination manually')

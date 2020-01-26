@@ -14,7 +14,8 @@ except OSError:
     WEBCAM = True
 
 # Camera size
-CAMERA_SIZE = (640, 480)
+CAMERA_RESOLUTION = (640, 480)
+CAMERA_RESIZE = (240, 180)
 
 
 # noinspection PyUnresolvedReferences
@@ -23,16 +24,18 @@ def stream_from_picamera(sock: zmq.Socket, flip: bool) -> None:
 
     # Initialize camera
     camera = PiCamera()
-    camera.resolution = CAMERA_SIZE
+    camera.resolution = CAMERA_RESIZE
     camera.framerate = 32
-    raw_capture = PiRGBArray(camera, size=CAMERA_SIZE)
+    raw_capture = PiRGBArray(camera, size=CAMERA_RESIZE)
 
     # Camera warm-up
-    time.sleep(0.1)
+    time.sleep(2.0)
 
-    # Tell the master that the camera is ready
-    sock.send_string('Ready')
-    print(sock.recv_string())
+    # Send ready signal to master
+    sock.send_string('\1')
+
+    # Wait for the starting signal
+    sock.recv_string()
 
     for capture in camera.capture_continuous(raw_capture, format='bgr', use_video_port=True):
         # Grab raw NumPy array representing the frame
@@ -53,7 +56,7 @@ def stream_from_picamera(sock: zmq.Socket, flip: bool) -> None:
         try:
             # If the recv succeeds, break from the loop
             sig = sock.recv_string(flags=zmq.NOBLOCK)
-            print('Termination signal received', sig)
+            print('Termination signal received:', sig)
             break
         except zmq.Again:
             pass
@@ -67,20 +70,18 @@ def stream_from_webcam(sock: zmq.Socket, flip: bool) -> None:
 
     # Initialize camera
     video_capture = cv2.VideoCapture(0)
-    video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_SIZE[0])
-    video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_SIZE[1])
+    video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_RESOLUTION[0])
+    video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_RESOLUTION[1])
 
     # Camera warm-up
     time.sleep(0.1)
 
-    # Tell the master that the camera is ready
-    sock.send_string('Ready')
-    print(sock.recv_string())
+    # Wait for the starting signal
+    sock.recv_string()
 
     while True:
         # Grab frame from video
         ret, frame = video_capture.read()
-        frame = cv2.resize(frame, CAMERA_SIZE)
 
         # Flip image, if specified
         if flip:
@@ -109,9 +110,9 @@ def shot_from_picamera(sock: zmq.Socket, flip: bool) -> None:
 
     # Initialize camera
     camera = PiCamera()
-    camera.resolution = CAMERA_SIZE
-    camera.framerate = 32
-    raw_capture = PiRGBArray(camera, size=CAMERA_SIZE)
+    camera.resolution = CAMERA_RESOLUTION
+    camera.framerate = 20
+    raw_capture = PiRGBArray(camera, size=CAMERA_RESOLUTION)
 
     # Camera warm-up
     time.sleep(0.1)
@@ -143,8 +144,8 @@ def shot_from_webcam(sock: zmq.Socket, flip: bool) -> None:
 
     # Initialize camera
     video_capture = cv2.VideoCapture(0)
-    video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_SIZE[0])
-    video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_SIZE[1])
+    video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_RESOLUTION[0])
+    video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_RESOLUTION[1])
 
     # Camera warm-up
     time.sleep(0.1)
@@ -155,7 +156,7 @@ def shot_from_webcam(sock: zmq.Socket, flip: bool) -> None:
 
     # Grab frame from video
     ret, frame = video_capture.read()
-    frame = cv2.resize(frame, CAMERA_SIZE)
+    frame = cv2.resize(frame, CAMERA_RESOLUTION)
 
     # Flip image, if specified
     if flip:
@@ -211,13 +212,13 @@ def main():
             print('Waiting for user input...')
             # Read user's choice
             sel = int(sock.recv_string())
-            if sel == 1:
+            if sel == 1 or sel == 3:
                 # Start streaming
                 stream = stream_from_picamera if not WEBCAM else stream_from_webcam
                 stream(sock, flip)
-            elif sel == 3:
-                shot = shot_from_picamera if not WEBCAM else shot_from_webcam
-                shot(sock, flip)
+            #elif sel == 3:
+            #    shot = shot_from_picamera if not WEBCAM else shot_from_webcam
+            #    shot(sock, flip)
             if sel == 4:
                 break
     except KeyboardInterrupt:
