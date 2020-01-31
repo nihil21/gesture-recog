@@ -10,13 +10,13 @@ from exceptions.error import ChessboardNotFoundError
 from utils.network_tools import concurrent_send, recv_frame, concurrent_flush
 
 
-# noinspection PyUnresolvedReferences
 def capture_images(socks: Dict[str, zmq.Socket],
                    folders: Dict[str, str],
                    camera_resolution: Tuple[int, int]) -> None:
     """Function which coordinates the capture of images from both cameras
         :param socks: dictionary containing the two zmq sockets for the two slaves, identified by a label
-        :param folders: dictionary containing the folder in which images will be saved, identified by a label"""
+        :param folders: dictionary containing the folder in which images will be saved, identified by a label
+        :param camera_resolution: tuple containing the desired resolution for the images"""
     print('Collecting images of a chessboard for calibration...')
 
     # Wait for ready signal from cameras
@@ -105,7 +105,6 @@ def capture_images(socks: Dict[str, zmq.Socket],
     print('Images collected')
 
 
-# noinspection PyUnresolvedReferences
 def calibrate(folders: Dict[str, str],
               pattern_size: Tuple[int, int],
               square_length: float,
@@ -263,7 +262,6 @@ def process_stereo_image(img_name_pair: Tuple[str, str],
     return stereo_img_name, stereo_img_points, stereo_img_drawn_corners
 
 
-# noinspection PyUnresolvedReferences
 def process_image_thread(img_name: str,
                          pattern_size: Tuple[int, int]) -> (np.ndarray, np.ndarray):
     # Find chessboard corners
@@ -282,7 +280,6 @@ def process_image_thread(img_name: str,
     return corners.reshape(-1, 2), img_drawn_corners
 
 
-# noinspection PyUnresolvedReferences
 def calibrate_single_camera(img_points: List[np.ndarray],
                             obj_points: List[np.ndarray],
                             camera_size: Tuple[int, int],
@@ -309,8 +306,6 @@ def calibrate_single_camera(img_points: List[np.ndarray],
     return cam_mtx, dist
 
 
-# TODO
-# noinspection PyUnresolvedReferences
 def disp_map(socks: Dict[str, zmq.Socket],
              calib_file: str,
              camera_resolution: Tuple[int, int]):
@@ -320,31 +315,42 @@ def disp_map(socks: Dict[str, zmq.Socket],
     mapyL = calib_data['mapyL']
     mapxR = calib_data['mapxR']
     mapyR = calib_data['mapyR']
-    valid_ROIL = calib_data['valid_ROIL']
-    valid_ROIR = calib_data['valid_ROIR']
 
-    # Create stereo matcher
-    SWS = 9
+    # Stereo matcher parameters
     MDS = -30
     NOD = 160
-    PFS = 5
-    PFC = 63
-    TTH = 500
-    UR = 1
-    SR = 14
+    SWS = 5
+    P1 = 8 * SWS ** 2
+    P2 = 32 * SWS ** 2
+    D12MD = 1
+    UR = 10
     SPWS = 100
+    SR = 14
+    PFC = 29
 
-    # Create and configure stereo matcher
-    stereo_matcher = cv2.StereoBM_create(numDisparities=NOD, blockSize=SWS)
-    stereo_matcher.setMinDisparity(MDS)
-    stereo_matcher.setPreFilterSize(PFS)
-    stereo_matcher.setPreFilterCap(PFC)
-    stereo_matcher.setTextureThreshold(TTH)
-    stereo_matcher.setUniquenessRatio(UR)
-    stereo_matcher.setSpeckleRange(SR)
-    stereo_matcher.setSpeckleWindowSize(SPWS)
-    stereo_matcher.setROI1(tuple(valid_ROIL))
-    stereo_matcher.setROI2(tuple(valid_ROIR))
+    # Create and configure left and right stereo matchers
+    stereo_matcherL = cv2.StereoSGBM_create(
+        minDisparity=MDS,
+        numDisparities=NOD,
+        blockSize=SWS,
+        P1=P1,
+        P2=P2,
+        disp12MaxDiff=D12MD,
+        uniquenessRatio=UR,
+        speckleWindowSize=SPWS,
+        speckleRange=SR,
+        preFilterCap=PFC
+    )
+    stereo_matcherR = cv2.ximgproc.createRightMatcher(stereo_matcherL)
+
+    # Filter parameters
+    lmbda = 80000
+    sigma = 1.2
+
+    # Create filter
+    wsl_filter = cv2.ximgproc.createDisparityWLSFilter(matcher_left=stereo_matcherL)
+    wsl_filter.setLambda(lmbda)
+    wsl_filter.setSigmaColor(sigma)
 
     # Receive confirmation by cameras
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -370,15 +376,22 @@ def disp_map(socks: Dict[str, zmq.Socket],
         dstL = cv2.remap(frameL, mapxL, mapyL, cv2.INTER_LINEAR)
         dstR = cv2.remap(frameR, mapxR, mapyR, cv2.INTER_LINEAR)
 
-        # Compute disparity
-        disparity = stereo_matcher.compute(dstL, dstR)
-        disp_gray = cv2.normalize(disparity, disparity, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+        # Compute disparities
+        dispL = stereo_matcherL.compute(dstL, dstR)
+        dispR = stereo_matcherR.compute(dstR, dstL)
+        filtered_disp = wsl_filter.filter(dispL, dstL, None, dispR)
+        disp_gray = cv2.normalize(src=filtered_disp,
+                                  dst=None,
+                                  alpha=0,
+                                  beta=255,
+                                  norm_type=cv2.NORM_MINMAX,
+                                  dtype=cv2.CV_8U)
+
         disp_color = cv2.applyColorMap(disp_gray, cv2.COLORMAP_JET)
 
         frames = np.hstack((dstL, dstR))
 
         cv2.imshow('Left and right frame', frames)
-        cv2.imshow('Disparity', disp_gray)
         cv2.imshow('Disparity Color', disp_color)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):

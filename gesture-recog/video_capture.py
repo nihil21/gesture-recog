@@ -15,10 +15,9 @@ except OSError:
 
 # Camera size
 CAMERA_RESOLUTION = (640, 480)
-CAMERA_RESIZE = (240, 180)
+CAMERA_RESIZE = (240, 192)
 
 
-# noinspection PyUnresolvedReferences
 def stream_from_picamera(sock: zmq.Socket, flip: bool) -> None:
     print('Streaming from PiCamera...')
 
@@ -55,6 +54,7 @@ def stream_from_picamera(sock: zmq.Socket, flip: bool) -> None:
         # Try to read the termination signal from a non-blocking recv
         try:
             # If the recv succeeds, break from the loop
+            # noinspection PyUnresolvedReferences
             sig = sock.recv_string(flags=zmq.NOBLOCK)
             print('Termination signal received:', sig)
             break
@@ -64,7 +64,6 @@ def stream_from_picamera(sock: zmq.Socket, flip: bool) -> None:
     camera.close()
 
 
-# noinspection PyUnresolvedReferences
 def stream_from_webcam(sock: zmq.Socket, flip: bool) -> None:
     print('Streaming from webcam...')
 
@@ -95,6 +94,7 @@ def stream_from_webcam(sock: zmq.Socket, flip: bool) -> None:
         # Try to read the termination signal from a non-blocking recv
         try:
             # If the recv succeeds, break from the loop
+            # noinspection PyUnresolvedReferences
             sig = sock.recv_string(flags=zmq.NOBLOCK)
             print('Termination signal received', sig)
             break
@@ -104,7 +104,6 @@ def stream_from_webcam(sock: zmq.Socket, flip: bool) -> None:
     video_capture.release()
 
 
-# noinspection PyUnresolvedReferences
 def shot_from_picamera(sock: zmq.Socket, flip: bool) -> None:
     print('Taking a picture from PiCamera...')
 
@@ -138,7 +137,6 @@ def shot_from_picamera(sock: zmq.Socket, flip: bool) -> None:
     camera.close()
 
 
-# noinspection PyUnresolvedReferences
 def shot_from_webcam(sock: zmq.Socket, flip: bool) -> None:
     print('Taking a picture from webcam...')
 
@@ -216,7 +214,7 @@ def main():
                 # Start streaming
                 stream = stream_from_picamera if not WEBCAM else stream_from_webcam
                 stream(sock, flip)
-            #elif sel == 3:
+            # elif sel == 3:
             #    shot = shot_from_picamera if not WEBCAM else shot_from_webcam
             #    shot(sock, flip)
             if sel == 4:

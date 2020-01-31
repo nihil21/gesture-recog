@@ -30,10 +30,10 @@ def concurrent_flush(socks: Dict[str, zmq.Socket]) -> None:
         executor.submit(flush_frames, socks['R'], 'R')
 
 
-# noinspection PyUnresolvedReferences
 def flush_frames(sock: zmq.Socket, camera_idx: str) -> None:
     while True:
         try:
+            # noinspection PyUnresolvedReferences
             sock.recv_string(flags=zmq.NOBLOCK)
             print('{}: socket flushed'.format(camera_idx))
             break
