@@ -10,12 +10,11 @@ from exceptions.error import ChessboardNotFoundError
 import utils.network_tools as nt
 
 
-# noinspection PyUnresolvedReferences
 def capture_images(socks: Dict[str, zmq.Socket],
                    folders: Dict[str, str],
                    res: Tuple[int, int]) -> None:
     """Function which coordinates the capture of images from both cameras
-        :param socks: dictionary containing the two zmq sockets for the two slaves, identified by a label
+        :param socks: dictionary containing the two zmq sockets for the two sensors, identified by a label ('L'/'R')
         :param folders: dictionary containing the folder in which images will be saved, identified by a label
         :param res: tuple representing the desired resolution to display images"""
     print('Collecting images of a chessboard for calibration...')
@@ -36,77 +35,68 @@ def capture_images(socks: Dict[str, zmq.Socket],
     start_time = datetime.now()
     while n_pics < tot_pics:
         # Get frames from both cameras
-        with ThreadPoolExecutor() as executor:
-            futures = [executor.submit(nt.recv_frame, socks['L'], 'L'),
-                       executor.submit(nt.recv_frame, socks['R'], 'R')]
-            for future in as_completed(futures):
-                frame, camera_idx = future.result()
-                if camera_idx == 'L':
-                    frameL = frame
-                else:
-                    frameR = frame
+        frameL, frameR = nt.concurrent_recv_frame(socks)
+        # Resize frames
+        res_frameL = cv2.resize(frameL, res)
+        res_frameR = cv2.resize(frameR, res)
 
-            # Display counter on screen before saving frame
-            if n_sec < tot_sec:
-                # Resize frames
-                res_frameL = cv2.resize(frameL, res)
-                res_frameR = cv2.resize(frameL, res)
+        # Display counter on screen before saving frame
+        if n_sec < tot_sec:
+            # Draw on screen the current remaining seconds
+            cv2.putText(img=res_frameL,
+                        text=str_sec[n_sec],
+                        org=(int(10), int(40)),
+                        fontFace=cv2.FONT_HERSHEY_DUPLEX,
+                        fontScale=1,
+                        color=(255, 255, 255),
+                        thickness=3,
+                        lineType=cv2.LINE_AA)
+            # Draw on screen the current remaining pictures
+            cv2.putText(img=res_frameR,
+                        text='{:d}/{:d}'.format(n_pics, tot_pics),
+                        org=(int(10), int(40)),
+                        fontFace=cv2.FONT_HERSHEY_DUPLEX,
+                        fontScale=1,
+                        color=(255, 255, 255),
+                        thickness=3,
+                        lineType=cv2.LINE_AA)
 
-                # Draw on screen the current remaining seconds
-                cv2.putText(img=res_frameL,
-                            text=str_sec[n_sec],
-                            org=(int(10), int(40)),
-                            fontFace=cv2.FONT_HERSHEY_DUPLEX,
-                            fontScale=1,
-                            color=(255, 255, 255),
-                            thickness=3,
-                            lineType=cv2.LINE_AA)
-                # Draw on screen the current remaining pictures
-                cv2.putText(img=res_frameR,
-                            text='{:d}/{:d}'.format(n_pics, tot_pics),
-                            org=(int(10), int(40)),
-                            fontFace=cv2.FONT_HERSHEY_DUPLEX,
-                            fontScale=1,
-                            color=(255, 255, 255),
-                            thickness=3,
-                            lineType=cv2.LINE_AA)
+            # If time elapsed is greater than one second, update 'n_sec'
+            time_elapsed = (datetime.now() - start_time).total_seconds()
+            if time_elapsed >= 1:
+                n_sec += 1
+                start_time = datetime.now()
+        else:
+            # When countdown ends, save grayscale image to file
+            gray_frameL = cv2.cvtColor(frameL, cv2.COLOR_BGR2GRAY)
+            gray_frameR = cv2.cvtColor(frameR, cv2.COLOR_BGR2GRAY)
+            pathL = folders['L']
+            pathR = folders['R']
+            cv2.imwrite(pathL + '{:02d}'.format(n_pics) + '.jpg', gray_frameL)
+            cv2.imwrite(pathR + '{:02d}'.format(n_pics) + '.jpg', gray_frameR)
+            # Update counters
+            n_pics += 1
+            n_sec = 0
 
-                # If time elapsed is greater than one second, update 'n_sec'
-                time_elapsed = (datetime.now() - start_time).total_seconds()
-                if time_elapsed >= 1:
-                    n_sec += 1
-                    start_time = datetime.now()
-            else:
-                # When countdown ends, save grayscale image to file
-                gray_frameL = cv2.cvtColor(frameL, cv2.COLOR_BGR2GRAY)
-                gray_frameR = cv2.cvtColor(frameR, cv2.COLOR_BGR2GRAY)
-                pathL = folders['L']
-                pathR = folders['R']
-                cv2.imwrite(pathL + '{:02d}'.format(n_pics) + '.jpg', gray_frameL)
-                cv2.imwrite(pathR + '{:02d}'.format(n_pics) + '.jpg', gray_frameR)
-                # Update counters
-                n_pics += 1
-                n_sec = 0
+            print('{:d}/{:d} images collected'.format(n_pics, tot_pics))
 
-                print('{:d}/{:d} images collected'.format(n_pics, tot_pics))
-            # Display side by side the frames
-            frames = np.hstack((res_frameL, res_frameR))
-            cv2.imshow('Left and right frames', frames)
+        # Display side by side the frames
+        frames = np.hstack((res_frameL, res_frameR))
+        cv2.imshow('Left and right frames', frames)
 
-            # If 'q' is pressed, or enough images are collected,
-            # termination signal is sent to the slaves and streaming ends
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                nt.concurrent_send(socks, 'term')
-                break
-            if n_pics == tot_pics:
-                nt.concurrent_send(socks, 'term')
+        # If 'q' is pressed, or enough images are collected,
+        # termination signal is sent to the slaves and streaming ends
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            nt.concurrent_send(socks, 'term')
+            break
+        if n_pics == tot_pics:
+            nt.concurrent_send(socks, 'term')
 
     cv2.destroyAllWindows()
     nt.concurrent_flush(socks)
     print('Images collected')
 
 
-# noinspection PyUnresolvedReferences
 def calibrate_stereo_camera(folders: Dict[str, str],
                             pattern_size: Tuple[int, int],
                             square_length: float,
@@ -238,7 +228,6 @@ def calibrate_stereo_camera(folders: Dict[str, str],
             plt.show()
 
 
-# noinspection PyUnresolvedReferences
 def process_stereo_image(img_name_pair: Tuple[str, str],
                          pattern_size: Tuple[int, int]) -> (str, np.ndarray, np.ndarray):
     """Processes a right/left pair of images and detects chessboard corners for calibration
@@ -265,7 +254,6 @@ def process_stereo_image(img_name_pair: Tuple[str, str],
     return stereo_img_name, stereo_img_points, stereo_img_drawn_corners
 
 
-# noinspection PyUnresolvedReferences
 def process_image_thread(img_name: str,
                          pattern_size: Tuple[int, int]) -> (np.ndarray, np.ndarray):
     # Find chessboard corners
@@ -284,7 +272,6 @@ def process_image_thread(img_name: str,
     return corners.reshape(-1, 2), img_drawn_corners
 
 
-# noinspection PyUnresolvedReferences
 def calibrate_single_camera(img_points: List[np.ndarray],
                             obj_points: List[np.ndarray],
                             camera_size: Tuple[int, int],
@@ -311,10 +298,13 @@ def calibrate_single_camera(img_points: List[np.ndarray],
     return cam_mtx, dist
 
 
-# noinspection PyUnresolvedReferences
-def disp_map(socks: Dict[str, zmq.Socket],
-             calib_file: str,
-             res: Tuple[int, int]) -> None:
+def realtime_disp_map(socks: Dict[str, zmq.Socket],
+                      calib_file: str,
+                      res: Tuple[int, int]) -> None:
+    """Displays a real-time disparity map
+        :param socks: dictionary containing the two zmq sockets for the two sensors, identified by a label ('L'/'R')
+        :param calib_file: path to the file in which calibration data will be saved
+        :param res: tuple representing the desired resolution to display images"""
     print('Displaying real-time disparity map...')
 
     # Load calibration data
@@ -323,20 +313,18 @@ def disp_map(socks: Dict[str, zmq.Socket],
     mapyL = calib_data['mapyL']
     mapxR = calib_data['mapxR']
     mapyR = calib_data['mapyR']
-    valid_ROIL = calib_data['valid_ROIL']
-    valid_ROIR = calib_data['valid_ROIR']
     print('Calibration data loaded from file')
 
     # Stereo matcher parameters
-    MDS = 4
+    MDS = 8
     NOD = 64
     SWS = 3
-    P1 = 8 * SWS ** 2
-    P2 = 32 * SWS ** 2
+    P1 = 8 * 3 * SWS ** 2
+    P2 = 32 * 3 * SWS ** 2
     D12MD = 1
     UR = 10
-    SPWS = 10
-    SR = 50
+    SPWS = 5
+    SR = 10
     PFC = 29
 
     # Create and configure left and right stereo matchers
@@ -359,9 +347,9 @@ def disp_map(socks: Dict[str, zmq.Socket],
     sigma = 1.2
 
     # Create filter
-    wsl_filter = cv2.ximgproc.createDisparityWLSFilter(matcher_left=stereo_matcherL)
-    wsl_filter.setLambda(lmbda)
-    wsl_filter.setSigmaColor(sigma)
+    wls_filter = cv2.ximgproc.createDisparityWLSFilter(matcher_left=stereo_matcherL)
+    wls_filter.setLambda(lmbda)
+    wls_filter.setSigmaColor(sigma)
 
     # Wait for ready signal from sensors
     nt.concurrent_recv(socks)
@@ -372,15 +360,7 @@ def disp_map(socks: Dict[str, zmq.Socket],
 
     while True:
         # Get frames from both cameras
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = [executor.submit(nt.recv_frame, socks['L'], 'L'),
-                       executor.submit(nt.recv_frame, socks['R'], 'R')]
-            for future in as_completed(futures):
-                frame, camera_idx = future.result()
-                if camera_idx == 'L':
-                    frameL = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                else:
-                    frameR = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        frameL, frameR = nt.concurrent_recv_frame(socks)
 
         # Undistort and rectify
         dstL = cv2.remap(frameL, mapxL, mapyL, cv2.INTER_LINEAR)
@@ -389,7 +369,7 @@ def disp_map(socks: Dict[str, zmq.Socket],
         # Compute disparities
         dispL = stereo_matcherL.compute(dstL, dstR)
         dispR = stereo_matcherR.compute(dstR, dstL)
-        filtered_disp = wsl_filter.filter(dispL, dstL, None, dispR)
+        filtered_disp = wls_filter.filter(dispL, dstL, None, dispR)
         disp_gray = cv2.normalize(src=filtered_disp,
                                   dst=None,
                                   alpha=0,
@@ -399,14 +379,21 @@ def disp_map(socks: Dict[str, zmq.Socket],
 
         disp_color = cv2.applyColorMap(disp_gray, cv2.COLORMAP_JET)
 
+        # Display resized frames and disparity maps
         frames = np.hstack((cv2.resize(dstL, res),
                             cv2.resize(dstR, res)))
+        res_disp_gray = cv2.resize(disp_gray, res)
+        res_disp_color = cv2.resize(disp_color, res)
 
         cv2.imshow('Left and right frame', frames)
-        cv2.imshow('Disparity', cv2.resize(disp_gray, res))
-        cv2.imshow('Disparity Color', cv2.resize(disp_color, res))
+        cv2.imshow('Disparity [Gray]', res_disp_gray)
+        cv2.imshow('Disparity [Color]', res_disp_color)
 
+        # When 'q' is pressed, save current frames and disparity maps to file and break the loop
         if cv2.waitKey(1) & 0xFF == ord('q'):
+            cv2.imwrite('../disp-samples/Stereo_image.jpg', frames)
+            cv2.imwrite('../disp-samples/Disparity_gray.jpg', res_disp_gray)
+            cv2.imwrite('../disp-samples/Disparity_color.jpg', res_disp_color)
             nt.concurrent_send(socks, 'term')
             break
 

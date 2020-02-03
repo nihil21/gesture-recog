@@ -18,7 +18,7 @@ L_PORT = 8000
 R_PORT = 8001
 
 # Camera size
-CAMERA_RESOLUTION = (208, 160)
+CAMERA_RESOLUTION = (240, 192)
 
 
 def stream_from_picamera(sock: zmq.Socket, flip: bool) -> None:
@@ -27,7 +27,7 @@ def stream_from_picamera(sock: zmq.Socket, flip: bool) -> None:
     # Initialize camera
     camera = PiCamera()
     camera.resolution = CAMERA_RESOLUTION
-    camera.framerate = 32
+    camera.framerate = 20
     raw_capture = PiRGBArray(camera, size=CAMERA_RESOLUTION)
 
     # Camera warm-up
@@ -44,7 +44,6 @@ def stream_from_picamera(sock: zmq.Socket, flip: bool) -> None:
 
         # Flip image, if specified
         if flip:
-            # noinspection PyUnresolvedReferences
             frame = cv2.flip(frame, 0)
 
         # Send the frame
@@ -70,11 +69,8 @@ def stream_from_webcam(sock: zmq.Socket, flip: bool) -> None:
     print('Streaming from webcam...')
 
     # Initialize camera
-    # noinspection PyUnresolvedReferences
     video_capture = cv2.VideoCapture(0)
-    # noinspection PyUnresolvedReferences
     video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_RESOLUTION[0])
-    # noinspection PyUnresolvedReferences
     video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_RESOLUTION[1])
 
     # Camera warm-up
@@ -91,7 +87,6 @@ def stream_from_webcam(sock: zmq.Socket, flip: bool) -> None:
 
         # Flip image, if specified
         if flip:
-            # noinspection PyUnresolvedReferences
             frame = cv2.flip(frame, 0)
 
         # Send the frame
@@ -109,73 +104,6 @@ def stream_from_webcam(sock: zmq.Socket, flip: bool) -> None:
     # Release resource
     video_capture.release()
     print('End transmission')
-
-
-def shot_from_picamera(sock: zmq.Socket, flip: bool) -> None:
-    print('Taking a picture from PiCamera...')
-
-    # Initialize camera
-    camera = PiCamera()
-    camera.resolution = CAMERA_RESOLUTION
-    camera.framerate = 20
-    raw_capture = PiRGBArray(camera, size=CAMERA_RESOLUTION)
-
-    # Camera warm-up
-    time.sleep(0.1)
-
-    # Send ready signal to master and wait for the starting signal
-    sock.send_string('\0')
-    sock.recv_string()
-
-    camera.capture(raw_capture, format='bgr')
-    # Grab raw NumPy array representing the frame
-    frame = raw_capture.array
-
-    # Flip image, if specified
-    if flip:
-        # noinspection PyUnresolvedReferences
-        frame = cv2.flip(frame, 0)
-
-    # Send the frame
-    nt.send_frame(sock, frame)
-
-    # Release resource
-    camera.close()
-
-
-def shot_from_webcam(sock: zmq.Socket, flip: bool) -> None:
-    print('Taking a picture from webcam...')
-
-    # Initialize camera
-    # noinspection PyUnresolvedReferences
-    video_capture = cv2.VideoCapture(0)
-    # noinspection PyUnresolvedReferences
-    video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_RESOLUTION[0])
-    # noinspection PyUnresolvedReferences
-    video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_RESOLUTION[1])
-
-    # Camera warm-up
-    time.sleep(0.1)
-
-    # Send ready signal to master and wait for the starting signal
-    sock.send_string('\0')
-    sock.recv_string()
-
-    # Grab frame from video
-    ret, frame = video_capture.read()
-    # noinspection PyUnresolvedReferences
-    frame = cv2.resize(frame, CAMERA_RESOLUTION)
-
-    # Flip image, if specified
-    if flip:
-        # noinspection PyUnresolvedReferences
-        frame = cv2.flip(frame, 0)
-
-    # Send the frame
-    nt.send_frame(sock, frame)
-
-    # Release resource
-    video_capture.release()
 
 
 def main():

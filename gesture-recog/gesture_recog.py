@@ -20,7 +20,7 @@ SQUARE_LEN = 26.5  # mm
 CALIB_FILE = "../calibration-data/calib"
 
 # Resolution
-RES = (416, 320)
+RES = (360, 288)
 
 
 def print_title():
@@ -104,7 +104,7 @@ def main():
             elif sel == 2:
                 ct.calibrate_stereo_camera(img_folders, PATTERN_SIZE, SQUARE_LEN, CALIB_FILE, RES)
             elif sel == 3:
-                ct.disp_map(socks, CALIB_FILE, RES)
+                ct.realtime_disp_map(socks, CALIB_FILE, RES)
             elif sel == 4:
                 break
     except KeyboardInterrupt:

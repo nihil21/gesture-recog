@@ -59,23 +59,46 @@ def concurrent_recv(socks: Dict[str, zmq.Socket]) -> None:
                 print('R: {}'.format(futureR.result()))
 
 
-# noinspection PyUnresolvedReferences
-def recv_frame(sock: zmq.Socket, camera_idx: str) -> Tuple[np.ndarray, str]:
-    # Read frame as a base64 string and return it
-    serial_frame = sock.recv_string()
-    buffer = base64.b64decode(serial_frame)
-    frame = cv2.imdecode(np.fromstring(buffer, dtype=np.uint8), 1)
-    return frame, camera_idx
-
-
-# noinspection PyUnresolvedReferences
 def send_frame(sock: zmq.Socket, frame: np.ndarray) -> None:
+    """Function that sends a NumPy array as a base64 string
+        :param sock: zmq socket on which the array is sent
+        :param frame: the array to be sent"""
     encoded, buffer = cv2.imencode('.jpg', frame)
     jpg_as_text = base64.b64encode(buffer)
     sock.send(jpg_as_text)
 
 
-def concurrent_flush(socks: Dict[str, zmq.Socket])-> None:
+def recv_frame(sock: zmq.Socket) -> np.ndarray:
+    """Function that implements the receiving of a NumPy array
+        :param sock: zmq socket on which the array is received
+
+        :return frame: the array received from the socket"""
+    serial_frame = sock.recv_string()
+    buffer = base64.b64decode(serial_frame)
+    frame = cv2.imdecode(np.fromstring(buffer, dtype=np.uint8), 1)
+    return frame
+
+
+def concurrent_recv_frame(socks: Dict[str, zmq.Socket]) -> Tuple[np.ndarray, np.ndarray]:
+    """Function that implements the concurrent receiving of two NumPy arrays from two sensors
+        :param socks: dictionary containing the two sockets for the two sensors, identified by a label ('L'/'R')
+
+        :return frameL: the array received from the left sensor
+        :return frameR: the array received from the right sensor"""
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futureL = executor.submit(recv_frame, socks['L'])
+        futureR = executor.submit(recv_frame, socks['R'])
+        for future in as_completed([futureL, futureR]):
+            if future == futureL:
+                frameL = future.result()
+            else:
+                frameR = future.result()
+    return frameL, frameR
+
+
+def concurrent_flush(socks: Dict[str, zmq.Socket]) -> None:
+    """Function that flushes concurrently the two zmq sockets
+        :param socks: dictionary containing the two zmq sockets for the two sensors, identified by a label"""
     with ThreadPoolExecutor(max_workers=2) as executor:
         executor.submit(flush, socks['L'])
         executor.submit(flush, socks['R'])
@@ -84,6 +107,8 @@ def concurrent_flush(socks: Dict[str, zmq.Socket])-> None:
 
 # noinspection PyUnresolvedReferences
 def flush(sock: zmq.Socket) -> None:
+    """Function that flushes a zmq socket
+        :param sock: zmq socket to flush"""
     sock.setsockopt(zmq.RCVTIMEO, 1000)
     while True:
         # When recv timeout expires, break from the loop
