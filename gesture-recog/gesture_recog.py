@@ -1,9 +1,8 @@
+import argparse
 import zmq
-from concurrent.futures import ThreadPoolExecutor
-from utils.calibration_tools import capture_images, calibrate, disp_map
-from utils.network_tools import concurrent_send
+from utils import calibration_tools as ct, network_tools as nt
 
-# Ports for both cameras
+# Ports of the sensors
 L_PORT = 8000
 R_PORT = 8001
 
@@ -20,32 +19,19 @@ SQUARE_LEN = 26.5  # mm
 # Folders to store calibration data
 CALIB_FILE = "../calibration-data/calib"
 
-# Camera size
-CAMERA_RESOLUTION = (640, 480)
+# Resolution
+RES = (416, 320)
 
 
-# noinspection PyUnresolvedReferences
-def create_socket(context: zmq.Context, tcp_port: int) -> zmq.Socket:
-    """Creates a zmq.PAIR socket
-        :param context: the zmq context
-        :param tcp_port: integer representing the port
-
-        :return sock: the zmq.PAIR socket created"""
-
-    sock = context.socket(zmq.PAIR)
-    sock.setsockopt(zmq.LINGER, 0)
-    sock.bind('tcp://*:{:d}'.format(tcp_port))
-
-    return sock
-
-
-def accept_slave_thread(sock: zmq.Socket, camera_idx: str) -> None:
-    """Confirms connection to slave by sending a message
-        :param sock: the zmq socket
-        :param camera_idx: the index of the camera attached to the slave ('L'/'R')"""
-
-    sock.send_string('Connection established with master')
-    print('Connection established with slave {}'.format(camera_idx))
+def print_title():
+    print('  ________                 __                                __________                            ')
+    print(' /  _____/  ____   _______/  |_ __ _________   ____          \\______   \\ ____   ____  ____   ____  ')
+    print('/   \\  ____/ __ \\ /  ___/\\   __\\  |  \\_  __ \\_/ __ \\   ______ |       _// __ \\_/ ___\\/  _ '
+          '\\ / ___\\ ')
+    print('\\    \\_\\  \\  ___/ \\___ \\  |  | |  |  /|  | \\/\\  ___/  /_____/ |    |   \\  ___/\\  \\__'
+          '(  <_> ) /_/  >')
+    print(' \\______  /\\___  >____  > |__| |____/ |__|    \\___  >         |____|_  /\\___  >\\___  >____/\\___  /')
+    print('        \\/     \\/     \\/                          \\/                 \\/     \\/     \\/     /_____/  ')
 
 
 def user_input() -> int:
@@ -53,7 +39,7 @@ def user_input() -> int:
         :return sel: integer representing user's choice"""
 
     print('')
-    print('=' * 40)
+    print('=' * 50)
     print('1 - Collect images for calibration')
     print('2 - Perform calibration')
     print('3 - Real time disparity map')
@@ -69,56 +55,62 @@ def user_input() -> int:
                 break
         except ValueError:
             print('The option inserted is not numeric, retry.')
-    print('-' * 40)
+    print('-' * 50)
     return sel
 
 
 def main():
+    # Construct argument parser and add arguments to it
+    ap = argparse.ArgumentParser()
+    ap.add_argument("-iL", "--ip_addressL", required=True, help="hostname of the left sensor")
+    ap.add_argument("-iR", "--ip_addressR", required=True, help="hostname of the right sensor")
+    args = vars(ap.parse_args())
+
+    # Argument reading and check
+    ipaddrL = args['ip_addressL']
+    ipaddrR = args['ip_addressR']
+
+    # Create dictionary of image folders paths
+    img_folders = {'L': L_IMG_FOLDER, 'R': R_IMG_FOLDER}
+
     context = None
     socks = None
     try:
-        # Set up zmq context and sockets PAIR
+        # Set up context
         context = zmq.Context()
-        socks = {'L': create_socket(context, L_PORT), 'R': create_socket(context, R_PORT)}
-        print('Waiting on ports {} and {}...'.format(L_PORT, R_PORT))
+        # Create sockets and put them in a dictionary
+        print('Trying to connect to sensors at {:s}:{:d} and {:s}:{:d}...'
+              .format(ipaddrL, L_PORT, ipaddrR, R_PORT))
+        socks = {'L': nt.create_socket_connect(context, ipaddrL, L_PORT),
+                 'R': nt.create_socket_connect(context, ipaddrR, R_PORT)}
+        # Wait for connection message from both sensors
+        nt.concurrent_recv(socks)
+        print('Connected to both sensors')
+        nt.concurrent_send(socks, 'both connected')
 
-        # Set up other environment variables
-        img_folders = {'L': L_IMG_FOLDER, 'R': R_IMG_FOLDER}
+        # Display the title of the tool in ASCII art
+        print_title()
 
-        # Accept connections in a thread pool
-        with ThreadPoolExecutor() as executor:
-            executor.submit(accept_slave_thread, socks['L'], 'L')
-            executor.submit(accept_slave_thread, socks['R'], 'R')
-
-        # Confirm connection to both slaves by sending a message
-        msg = 'Connection established with both slaves'
-        print(msg)
-        concurrent_send(socks, msg)
-
-        # User input cycle
         while True:
             # Display action menu and ask for user input
             sel = user_input()
-
-            # Tell slaves to prepare for streaming, by sending user's selection,
-            # unless he chose calibration (done server-side only)
+            # Send command to sensors, unless user chose to calibrate cameras (server-side only)
             if sel != 2:
-                concurrent_send(socks, str(sel))
-            if sel == 4:
-                break
+                nt.concurrent_send(socks, str(sel))
 
-            # Invoke the corresponding function
+            # Invoke corresponding function
             if sel == 1:
-                capture_images(socks, img_folders, CAMERA_RESOLUTION)
+                ct.capture_images(socks, img_folders, RES)
             elif sel == 2:
-                calibrate(img_folders, PATTERN_SIZE, SQUARE_LEN, CALIB_FILE)
+                ct.calibrate_stereo_camera(img_folders, PATTERN_SIZE, SQUARE_LEN, CALIB_FILE, RES)
             elif sel == 3:
-                disp_map(socks, CALIB_FILE, CAMERA_RESOLUTION)
+                ct.disp_map(socks, CALIB_FILE, RES)
+            elif sel == 4:
+                break
     except KeyboardInterrupt:
-        print('')
-        print('Enforcing termination manually')
+        print('\nTermination enforced manually')
     finally:
-        # Closing sockets
+        # Close sockets and context
         for sock in socks.values():
             sock.close()
         context.term()

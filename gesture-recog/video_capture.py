@@ -2,8 +2,8 @@ import sys
 import argparse
 import zmq
 import cv2
-import base64
 import time
+import utils.network_tools as nt
 try:
     from picamera.array import PiRGBArray
     from picamera import PiCamera
@@ -13,9 +13,12 @@ except OSError:
     print("PiCamera not supported by the system, webcam will be used.")
     WEBCAM = True
 
+# Ports of the sensors
+L_PORT = 8000
+R_PORT = 8001
+
 # Camera size
-CAMERA_RESOLUTION = (640, 480)
-CAMERA_RESIZE = (240, 192)
+CAMERA_RESOLUTION = (208, 160)
 
 
 def stream_from_picamera(sock: zmq.Socket, flip: bool) -> None:
@@ -23,18 +26,17 @@ def stream_from_picamera(sock: zmq.Socket, flip: bool) -> None:
 
     # Initialize camera
     camera = PiCamera()
-    camera.resolution = CAMERA_RESIZE
+    camera.resolution = CAMERA_RESOLUTION
     camera.framerate = 32
-    raw_capture = PiRGBArray(camera, size=CAMERA_RESIZE)
+    raw_capture = PiRGBArray(camera, size=CAMERA_RESOLUTION)
 
     # Camera warm-up
     time.sleep(2.0)
 
-    # Send ready signal to master
-    sock.send_string('\1')
-
-    # Wait for the starting signal
-    sock.recv_string()
+    # Send ready message to master and wait for the starting signal
+    sock.send_string('ready')
+    sig = sock.recv_string()
+    print('Master: {}'.format(sig))
 
     for capture in camera.capture_continuous(raw_capture, format='bgr', use_video_port=True):
         # Grab raw NumPy array representing the frame
@@ -42,12 +44,11 @@ def stream_from_picamera(sock: zmq.Socket, flip: bool) -> None:
 
         # Flip image, if specified
         if flip:
+            # noinspection PyUnresolvedReferences
             frame = cv2.flip(frame, 0)
 
-        # Send the frame as a base64 string
-        encoded, buffer = cv2.imencode('.jpg', frame)
-        jpg_as_text = base64.b64encode(buffer)
-        sock.send(jpg_as_text)
+        # Send the frame
+        nt.send_frame(sock, frame)
 
         raw_capture.truncate(0)
 
@@ -56,27 +57,33 @@ def stream_from_picamera(sock: zmq.Socket, flip: bool) -> None:
             # If the recv succeeds, break from the loop
             # noinspection PyUnresolvedReferences
             sig = sock.recv_string(flags=zmq.NOBLOCK)
-            print('Termination signal received:', sig)
+            print('Master: {}'.format(sig))
             break
         except zmq.Again:
             pass
     # Release resource
     camera.close()
+    print('End transmission')
 
 
 def stream_from_webcam(sock: zmq.Socket, flip: bool) -> None:
     print('Streaming from webcam...')
 
     # Initialize camera
+    # noinspection PyUnresolvedReferences
     video_capture = cv2.VideoCapture(0)
+    # noinspection PyUnresolvedReferences
     video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_RESOLUTION[0])
+    # noinspection PyUnresolvedReferences
     video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_RESOLUTION[1])
 
     # Camera warm-up
     time.sleep(0.1)
 
-    # Wait for the starting signal
-    sock.recv_string()
+    # Send ready message to master and wait for the starting signal
+    sock.send_string('ready')
+    sig = sock.recv_string()
+    print('Master: {}'.format(sig))
 
     while True:
         # Grab frame from video
@@ -84,24 +91,24 @@ def stream_from_webcam(sock: zmq.Socket, flip: bool) -> None:
 
         # Flip image, if specified
         if flip:
+            # noinspection PyUnresolvedReferences
             frame = cv2.flip(frame, 0)
 
-        # Send the frame as a base64 string
-        encoded, buffer = cv2.imencode('.jpg', frame)
-        jpg_as_text = base64.b64encode(buffer)
-        sock.send(jpg_as_text)
+        # Send the frame
+        nt.send_frame(sock, frame)
 
         # Try to read the termination signal from a non-blocking recv
         try:
             # If the recv succeeds, break from the loop
             # noinspection PyUnresolvedReferences
             sig = sock.recv_string(flags=zmq.NOBLOCK)
-            print('Termination signal received', sig)
+            print('Master: {}'.format(sig))
             break
         except zmq.Again:
             pass
     # Release resource
     video_capture.release()
+    print('End transmission')
 
 
 def shot_from_picamera(sock: zmq.Socket, flip: bool) -> None:
@@ -116,9 +123,9 @@ def shot_from_picamera(sock: zmq.Socket, flip: bool) -> None:
     # Camera warm-up
     time.sleep(0.1)
 
-    # Tell the master that the camera is ready
-    sock.send_string('Ready')
-    print(sock.recv_string())
+    # Send ready signal to master and wait for the starting signal
+    sock.send_string('\0')
+    sock.recv_string()
 
     camera.capture(raw_capture, format='bgr')
     # Grab raw NumPy array representing the frame
@@ -126,12 +133,11 @@ def shot_from_picamera(sock: zmq.Socket, flip: bool) -> None:
 
     # Flip image, if specified
     if flip:
+        # noinspection PyUnresolvedReferences
         frame = cv2.flip(frame, 0)
 
-    # Send the frame as a base64 string
-    encoded, buffer = cv2.imencode('.jpg', frame)
-    jpg_as_text = base64.b64encode(buffer)
-    sock.send(jpg_as_text)
+    # Send the frame
+    nt.send_frame(sock, frame)
 
     # Release resource
     camera.close()
@@ -141,29 +147,32 @@ def shot_from_webcam(sock: zmq.Socket, flip: bool) -> None:
     print('Taking a picture from webcam...')
 
     # Initialize camera
+    # noinspection PyUnresolvedReferences
     video_capture = cv2.VideoCapture(0)
+    # noinspection PyUnresolvedReferences
     video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_RESOLUTION[0])
+    # noinspection PyUnresolvedReferences
     video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_RESOLUTION[1])
 
     # Camera warm-up
     time.sleep(0.1)
 
-    # Tell the master that the camera is ready
-    sock.send_string('Ready')
-    print(sock.recv_string())
+    # Send ready signal to master and wait for the starting signal
+    sock.send_string('\0')
+    sock.recv_string()
 
     # Grab frame from video
     ret, frame = video_capture.read()
+    # noinspection PyUnresolvedReferences
     frame = cv2.resize(frame, CAMERA_RESOLUTION)
 
     # Flip image, if specified
     if flip:
+        # noinspection PyUnresolvedReferences
         frame = cv2.flip(frame, 0)
 
-    # Send the frame as a base64 string
-    encoded, buffer = cv2.imencode('.jpg', frame)
-    jpg_as_text = base64.b64encode(buffer)
-    sock.send(jpg_as_text)
+    # Send the frame
+    nt.send_frame(sock, frame)
 
     # Release resource
     video_capture.release()
@@ -172,58 +181,47 @@ def shot_from_webcam(sock: zmq.Socket, flip: bool) -> None:
 def main():
     # Construct argument parser and add arguments to it
     ap = argparse.ArgumentParser()
-    ap.add_argument("-i", "--ip_address", required=True, help="hostname of the master")
-    ap.add_argument("-p", "--port", required=True, help="port on which the slave connects to master")
-    ap.add_argument("-f", "--flip", action="store_true", help="if set, image is flipped before it is sent to master")
+    ap.add_argument("-o", "--orientation", required=True, help="left/right orientation of the sensor ('L'/'R')")
+    ap.add_argument("-f", "--flip", action="store_true", help="if set, image is flipped before it is sent to master "
+                                                              "(useful only in particular hardware setups)")
     args = vars(ap.parse_args())
 
     # Argument reading and check
-    ipaddr = args['ip_address']
-    port = args['port']
-    try:
-        port = int(port)
-    except ValueError:
-        sys.exit("Argument 'port' must be an integer.")
-    if not 1024 <= port <= 65535:
-        sys.exit("Argument 'port' must within range [1024, 65535].")
+    orientation = args['orientation']
+    if orientation == 'L':
+        port = L_PORT
+    elif orientation == 'R':
+        port = R_PORT
+    else:
+        sys.exit("Argument 'orientation' must be either 'L' for left or 'R' for right.")
     flip = args['flip']
 
     context = None
     sock = None
     try:
-        # Connect to master
+        # Set up context and socket
         context = zmq.Context()
-        # noinspection PyUnresolvedReferences
-        sock = context.socket(zmq.PAIR)
-        # noinspection PyUnresolvedReferences
-        sock.setsockopt(zmq.LINGER, 0)
-        sock.connect("tcp://{}:{}".format(ipaddr, port))
+        sock = nt.create_socket_bind(context, port)
+        # Send connection message to master and wait for a confirmation
+        print('Waiting on port {}...'.format(port))
+        sock.send_string('connection accepted')
+        print('Connection established with master, waiting for the other sensor...')
+        sig = sock.recv_string()
+        print('Master: {}'.format(sig))
 
-        # Confirm connection of the slave itself
-        print(sock.recv_string())
-
-        # Confirm connection of the other slave
-        print(sock.recv_string())
-
-        # User input cycle
         while True:
-            print('Waiting for user input...')
-            # Read user's choice
-            sel = int(sock.recv_string())
-            if sel == 1 or sel == 3:
-                # Start streaming
-                stream = stream_from_picamera if not WEBCAM else stream_from_webcam
-                stream(sock, flip)
-            # elif sel == 3:
-            #    shot = shot_from_picamera if not WEBCAM else shot_from_webcam
-            #    shot(sock, flip)
-            if sel == 4:
+            print('Waiting for a command...')
+            cmd = int(sock.recv_string())
+            if cmd == 4:
                 break
+
+            # Start streaming
+            stream = stream_from_picamera if not WEBCAM else stream_from_webcam
+            stream(sock, flip)
     except KeyboardInterrupt:
-        print('')
-        print('Enforcing termination manually')
+        print('\nTermination enforced manually')
     finally:
-        # Closing sockets
+        # Closing socket and context
         sock.close()
         context.term()
         print('Terminating...')

@@ -7,49 +7,53 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Tuple, List
 from matplotlib import pyplot as plt
 from exceptions.error import ChessboardNotFoundError
-from utils.network_tools import concurrent_send, recv_frame, concurrent_flush
+import utils.network_tools as nt
 
 
+# noinspection PyUnresolvedReferences
 def capture_images(socks: Dict[str, zmq.Socket],
                    folders: Dict[str, str],
-                   camera_resolution: Tuple[int, int]) -> None:
+                   res: Tuple[int, int]) -> None:
     """Function which coordinates the capture of images from both cameras
         :param socks: dictionary containing the two zmq sockets for the two slaves, identified by a label
         :param folders: dictionary containing the folder in which images will be saved, identified by a label
-        :param camera_resolution: tuple containing the desired resolution for the images"""
+        :param res: tuple representing the desired resolution to display images"""
     print('Collecting images of a chessboard for calibration...')
 
-    # Wait for ready signal from cameras
-    with ThreadPoolExecutor() as executor:
-        executor.submit(socks['L'].recv_string)
-        executor.submit(socks['R'].recv_string)
+    # Wait for ready signal from sensors
+    nt.concurrent_recv(socks)
+    print('Both sensors are ready')
 
     # Initialize variables for countdown
     n_pics, tot_pics = 0, 30
     n_sec, tot_sec = 0, 4
     str_sec = '4321'
 
-    # Synchronize cameras with a start signal
-    concurrent_send(socks, '\1')
+    # Synchronize sensors with a start signal
+    nt.concurrent_send(socks, 'start')
 
     # Save start time
     start_time = datetime.now()
     while n_pics < tot_pics:
         # Get frames from both cameras
         with ThreadPoolExecutor() as executor:
-            futures = [executor.submit(recv_frame, socks['L'], 'L'),
-                       executor.submit(recv_frame, socks['R'], 'R')]
+            futures = [executor.submit(nt.recv_frame, socks['L'], 'L'),
+                       executor.submit(nt.recv_frame, socks['R'], 'R')]
             for future in as_completed(futures):
                 frame, camera_idx = future.result()
                 if camera_idx == 'L':
-                    frameL = cv2.resize(frame, camera_resolution)
+                    frameL = frame
                 else:
-                    frameR = cv2.resize(frame, camera_resolution)
+                    frameR = frame
 
             # Display counter on screen before saving frame
             if n_sec < tot_sec:
+                # Resize frames
+                res_frameL = cv2.resize(frameL, res)
+                res_frameR = cv2.resize(frameL, res)
+
                 # Draw on screen the current remaining seconds
-                cv2.putText(img=frameL,
+                cv2.putText(img=res_frameL,
                             text=str_sec[n_sec],
                             org=(int(10), int(40)),
                             fontFace=cv2.FONT_HERSHEY_DUPLEX,
@@ -58,7 +62,7 @@ def capture_images(socks: Dict[str, zmq.Socket],
                             thickness=3,
                             lineType=cv2.LINE_AA)
                 # Draw on screen the current remaining pictures
-                cv2.putText(img=frameR,
+                cv2.putText(img=res_frameR,
                             text='{:d}/{:d}'.format(n_pics, tot_pics),
                             org=(int(10), int(40)),
                             fontFace=cv2.FONT_HERSHEY_DUPLEX,
@@ -83,37 +87,37 @@ def capture_images(socks: Dict[str, zmq.Socket],
                 # Update counters
                 n_pics += 1
                 n_sec = 0
-                # Flush sockets to re-synchronize cameras
-                concurrent_flush(socks)
 
                 print('{:d}/{:d} images collected'.format(n_pics, tot_pics))
             # Display side by side the frames
-            frames = np.hstack((frameL, frameR))
+            frames = np.hstack((res_frameL, res_frameR))
             cv2.imshow('Left and right frames', frames)
 
             # If 'q' is pressed, or enough images are collected,
             # termination signal is sent to the slaves and streaming ends
             if cv2.waitKey(1) & 0xFF == ord('q'):
-                concurrent_send(socks, '\0')
+                nt.concurrent_send(socks, 'term')
                 break
             if n_pics == tot_pics:
-                concurrent_send(socks, '\0')
+                nt.concurrent_send(socks, 'term')
 
     cv2.destroyAllWindows()
-    # Flush the sockets
-    concurrent_flush(socks)
+    nt.concurrent_flush(socks)
     print('Images collected')
 
 
-def calibrate(folders: Dict[str, str],
-              pattern_size: Tuple[int, int],
-              square_length: float,
-              calib_file: str) -> None:
+# noinspection PyUnresolvedReferences
+def calibrate_stereo_camera(folders: Dict[str, str],
+                            pattern_size: Tuple[int, int],
+                            square_length: float,
+                            calib_file: str,
+                            res: Tuple[int, int]) -> None:
     """Calibrates both cameras using pictures of a chessboard
         :param folders: dictionary containing the folder in which images will be saved, identified by a label
         :param pattern_size: size of the chessboard used for calibration
         :param square_length: float representing the length, in mm, of the square edge
-        :param calib_file: path to the file in which calibration data will be saved"""
+        :param calib_file: path to the file in which calibration data will be saved
+        :param res: tuple representing the desired resolution to display images"""
 
     # Get a list of images captured, divided by folder
     img_namesL, img_namesR = glob.glob(folders['L'] + '*.jpg'), glob.glob(folders['R'] + '*.jpg')
@@ -199,12 +203,11 @@ def calibrate(folders: Dict[str, str],
                         distL=distL, distR=distR, mapxL=mapxL, mapxR=mapxR, mapyL=mapyL, mapyR=mapyR,
                         proj_mtxL=proj_mtxL, proj_mtxR=proj_mtxR, rot_mtx=rot_mtx, rot_mtxL=rot_mtxL, rot_mtxR=rot_mtxR,
                         trasl_mtx=trasl_mtx, valid_ROIL=valid_ROIL, valid_ROIR=valid_ROIR)
-
     print('Calibration data saved to file')
 
     # Ask user to plot the images used for calibration with the applied corrections
     while True:
-        disp_images = input('Do you want to plot the images used for calibration? [y/n]: ')
+        disp_images = input('\nDo you want to plot the images used for calibration? [y/n]: ')
         if disp_images not in ['y', 'n']:
             print('The option inserted is not valid, retry.')
         else:
@@ -213,29 +216,29 @@ def calibrate(folders: Dict[str, str],
     # Plot the images with corners drawn on the chessboard and with calibration applied
     if disp_images == 'y':
         for i in range(0, len(stereo_img_names)):
-            # for stereo_img_drawn_corners in stereo_img_drawn_corners_list:
             stereo_img_drawn_corners = stereo_img_drawn_corners_list[i]
             fig, ax = plt.subplots(nrows=2, ncols=2)
             fig.suptitle(stereo_img_names[i])
             # Plot the original images
-            ax[0][0].imshow(stereo_img_drawn_corners[0])
+            ax[0][0].imshow(cv2.resize(stereo_img_drawn_corners[0], res, cv2.INTER_NEAREST))
             ax[0][0].set_title('L frame')
-            ax[0][1].imshow(stereo_img_drawn_corners[1])
+            ax[0][1].imshow(cv2.resize(stereo_img_drawn_corners[1], res, cv2.INTER_NEAREST))
             ax[0][1].set_title('R frame')
 
             # Remap images using the mapping found after calibration
-            dstL = cv2.remap(stereo_img_drawn_corners[0], mapxL, mapyL, cv2.INTER_LINEAR)
-            dstR = cv2.remap(stereo_img_drawn_corners[1], mapxR, mapyR, cv2.INTER_LINEAR)
+            dstL = cv2.remap(stereo_img_drawn_corners[0], mapxL, mapyL, cv2.INTER_NEAREST)
+            dstR = cv2.remap(stereo_img_drawn_corners[1], mapxR, mapyR, cv2.INTER_NEAREST)
 
             # Plot the undistorted images
-            ax[1][0].imshow(dstL)
+            ax[1][0].imshow(cv2.resize(dstL, res, cv2.INTER_NEAREST))
             ax[1][0].set_title('L frame undistorted')
-            ax[1][1].imshow(dstR)
+            ax[1][1].imshow(cv2.resize(dstR, res, cv2.INTER_NEAREST))
             ax[1][1].set_title('R frame undistorted')
 
             plt.show()
 
 
+# noinspection PyUnresolvedReferences
 def process_stereo_image(img_name_pair: Tuple[str, str],
                          pattern_size: Tuple[int, int]) -> (str, np.ndarray, np.ndarray):
     """Processes a right/left pair of images and detects chessboard corners for calibration
@@ -262,6 +265,7 @@ def process_stereo_image(img_name_pair: Tuple[str, str],
     return stereo_img_name, stereo_img_points, stereo_img_drawn_corners
 
 
+# noinspection PyUnresolvedReferences
 def process_image_thread(img_name: str,
                          pattern_size: Tuple[int, int]) -> (np.ndarray, np.ndarray):
     # Find chessboard corners
@@ -280,6 +284,7 @@ def process_image_thread(img_name: str,
     return corners.reshape(-1, 2), img_drawn_corners
 
 
+# noinspection PyUnresolvedReferences
 def calibrate_single_camera(img_points: List[np.ndarray],
                             obj_points: List[np.ndarray],
                             camera_size: Tuple[int, int],
@@ -306,26 +311,32 @@ def calibrate_single_camera(img_points: List[np.ndarray],
     return cam_mtx, dist
 
 
+# noinspection PyUnresolvedReferences
 def disp_map(socks: Dict[str, zmq.Socket],
              calib_file: str,
-             camera_resolution: Tuple[int, int]):
+             res: Tuple[int, int]) -> None:
+    print('Displaying real-time disparity map...')
+
     # Load calibration data
     calib_data = np.load(calib_file + '.npz')
     mapxL = calib_data['mapxL']
     mapyL = calib_data['mapyL']
     mapxR = calib_data['mapxR']
     mapyR = calib_data['mapyR']
+    valid_ROIL = calib_data['valid_ROIL']
+    valid_ROIR = calib_data['valid_ROIR']
+    print('Calibration data loaded from file')
 
     # Stereo matcher parameters
-    MDS = -30
-    NOD = 160
-    SWS = 5
+    MDS = 4
+    NOD = 64
+    SWS = 3
     P1 = 8 * SWS ** 2
     P2 = 32 * SWS ** 2
     D12MD = 1
     UR = 10
-    SPWS = 100
-    SR = 14
+    SPWS = 10
+    SR = 50
     PFC = 29
 
     # Create and configure left and right stereo matchers
@@ -352,25 +363,24 @@ def disp_map(socks: Dict[str, zmq.Socket],
     wsl_filter.setLambda(lmbda)
     wsl_filter.setSigmaColor(sigma)
 
-    # Receive confirmation by cameras
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        executor.submit(socks['L'].recv_string)
-        executor.submit(socks['R'].recv_string)
+    # Wait for ready signal from sensors
+    nt.concurrent_recv(socks)
+    print('Both sensors are ready')
 
-    # Synchronize cameras with a start signal
-    concurrent_send(socks, msg='\1')
+    # Synchronize sensors with a start signal
+    nt.concurrent_send(socks, 'start')
 
     while True:
         # Get frames from both cameras
         with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = [executor.submit(recv_frame, socks['L'], 'L'),
-                       executor.submit(recv_frame, socks['R'], 'R')]
+            futures = [executor.submit(nt.recv_frame, socks['L'], 'L'),
+                       executor.submit(nt.recv_frame, socks['R'], 'R')]
             for future in as_completed(futures):
                 frame, camera_idx = future.result()
                 if camera_idx == 'L':
-                    frameL = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), camera_resolution)
+                    frameL = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 else:
-                    frameR = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), camera_resolution)
+                    frameR = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         # Undistort and rectify
         dstL = cv2.remap(frameL, mapxL, mapyL, cv2.INTER_LINEAR)
@@ -389,14 +399,16 @@ def disp_map(socks: Dict[str, zmq.Socket],
 
         disp_color = cv2.applyColorMap(disp_gray, cv2.COLORMAP_JET)
 
-        frames = np.hstack((dstL, dstR))
+        frames = np.hstack((cv2.resize(dstL, res),
+                            cv2.resize(dstR, res)))
 
         cv2.imshow('Left and right frame', frames)
-        cv2.imshow('Disparity Color', disp_color)
+        cv2.imshow('Disparity', cv2.resize(disp_gray, res))
+        cv2.imshow('Disparity Color', cv2.resize(disp_color, res))
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
-            concurrent_send(socks, '\0')
+            nt.concurrent_send(socks, 'term')
             break
 
+    nt.concurrent_flush(socks)
     cv2.destroyAllWindows()
-    concurrent_flush(socks)
