@@ -111,9 +111,14 @@ def calibrate_stereo_camera(folders: Dict[str, str],
 
     # Get a list of images captured, divided by folder
     img_namesL, img_namesR = glob.glob(folders['L'] + '*.jpg'), glob.glob(folders['R'] + '*.jpg')
+    # If one of the two lists is empty, return immediately
+    if len(img_namesL) == 0 or len(img_namesR) == 0:
+        print('There are no images to perform calibration')
+        return
     # Produce a list of pairs '(right_image, left_image)'
     # If one list has more elements than the other, the extra elements will be automatically discarded by 'zip'
     img_name_pairs = list(zip(img_namesL, img_namesR))
+
     # Process concurrently stereo images
     stereo_img_names = []
     stereo_img_points_list = []
@@ -132,6 +137,11 @@ def calibrate_stereo_camera(folders: Dict[str, str],
                 stereo_img_drawn_corners_list.append(stereo_img_drawn_corners)
             except ChessboardNotFoundError as e:
                 print('No chessboard found in image {}'.format(e.image))
+
+    # If no chessboard was detected, return immediately
+    if len(stereo_img_points_list) == 0:
+        print('No chessboards were detected in the images provided')
+        return
 
     # Produce two lists of image points, one for the right and one for the left cameras
     stereo_img_points_unzipped = [list(t) for t in zip(*stereo_img_points_list)]
@@ -240,13 +250,16 @@ def process_stereo_image(img_name_pair: Tuple[str, str],
     stereo_img_name = img_name_pair[0].split('/')[-1:]
     print('Processing image {}'.format(stereo_img_name))
 
-    # Process in parallel both images
+    # Process concurrently both images
     with ThreadPoolExecutor(max_workers=2) as executor:
         futureL = executor.submit(process_image_thread, img_name_pair[0], pattern_size)
         futureR = executor.submit(process_image_thread, img_name_pair[1], pattern_size)
         # Collect the images with the detected chessboard and the corners, which will be used for calibration
-        img_pointsL, img_drawn_cornersL = futureL.result()
-        img_pointsR, img_drawn_cornersR = futureR.result()
+        for future in as_completed([futureL, futureR]):
+            if future == futureL:
+                img_pointsL, img_drawn_cornersL = futureL.result()
+            else:
+                img_pointsR, img_drawn_cornersR = futureR.result()
         stereo_img_points = (img_pointsL, img_pointsR)
         stereo_img_drawn_corners = (img_drawn_cornersL, img_drawn_cornersR)
 
@@ -303,8 +316,7 @@ def realtime_disp_map(socks: Dict[str, zmq.Socket],
                       res: Tuple[int, int]) -> None:
     """Displays a real-time disparity map
         :param socks: dictionary containing the two zmq sockets for the two sensors, identified by a label ('L'/'R')
-        :param calib_file: path to the file in which calibration data will be saved
-        :param res: tuple representing the desired resolution to display images"""
+        :param calib_file: path to the file in which calibration data will be saved"""
     print('Displaying real-time disparity map...')
 
     # Load calibration data
