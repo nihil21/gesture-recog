@@ -333,12 +333,12 @@ def realtime_disp_map(socks: Dict[str, zmq.Socket],
     # Stereo matcher parameters
     MDS = 8
     NOD = 48
-    SWS = 5
+    SWS = 7
     P1 = 8 * SWS ** 2
     P2 = 32 * SWS ** 2
     D12MD = 1
     UR = 10
-    SPWS = 3
+    SPWS = 5
     SR = 2
     PFC = 29
 
