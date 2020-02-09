@@ -316,7 +316,8 @@ def realtime_disp_map(socks: Dict[str, zmq.Socket],
                       res: Tuple[int, int]) -> None:
     """Displays a real-time disparity map
         :param socks: dictionary containing the two zmq sockets for the two sensors, identified by a label ('L'/'R')
-        :param calib_file: path to the file in which calibration data will be saved"""
+        :param calib_file: path to the file in which calibration data will be saved
+        :param res: tuple representing the desired resolution to display images"""
     print('Displaying real-time disparity map...')
 
     # Load calibration data
@@ -325,18 +326,20 @@ def realtime_disp_map(socks: Dict[str, zmq.Socket],
     mapyL = calib_data['mapyL']
     mapxR = calib_data['mapxR']
     mapyR = calib_data['mapyR']
+    valid_ROIL = calib_data['valid_ROIL']
+    valid_ROIR = calib_data['valid_ROIR']
     print('Calibration data loaded from file')
 
     # Stereo matcher parameters
     MDS = 8
-    NOD = 64
-    SWS = 3
-    P1 = 8 * 3 * SWS ** 2
-    P2 = 32 * 3 * SWS ** 2
+    NOD = 48
+    SWS = 5
+    P1 = 8 * SWS ** 2
+    P2 = 32 * SWS ** 2
     D12MD = 1
     UR = 10
-    SPWS = 5
-    SR = 10
+    SPWS = 3
+    SR = 2
     PFC = 29
 
     # Create and configure left and right stereo matchers
@@ -363,6 +366,13 @@ def realtime_disp_map(socks: Dict[str, zmq.Socket],
     wls_filter.setLambda(lmbda)
     wls_filter.setSigmaColor(sigma)
 
+    # Compute valid ROI
+    valid_ROI = cv2.getValidDisparityROI(roi1=valid_ROIL,
+                                         roi2=valid_ROIR,
+                                         minDisparity=MDS,
+                                         numberOfDisparities=NOD,
+                                         SADWindowSize=SWS)
+
     # Wait for ready signal from sensors
     nt.concurrent_recv(socks)
     print('Both sensors are ready')
@@ -378,16 +388,24 @@ def realtime_disp_map(socks: Dict[str, zmq.Socket],
         dstL = cv2.remap(frameL, mapxL, mapyL, cv2.INTER_LINEAR)
         dstR = cv2.remap(frameR, mapxR, mapyR, cv2.INTER_LINEAR)
 
+        # Convert to GRAY
+        dstL_gray = cv2.cvtColor(dstL, cv2.COLOR_BGR2GRAY)
+        dstR_gray = cv2.cvtColor(dstR, cv2.COLOR_BGR2GRAY)
+
         # Compute disparities
-        dispL = stereo_matcherL.compute(dstL, dstR)
-        dispR = stereo_matcherR.compute(dstR, dstL)
-        filtered_disp = wls_filter.filter(dispL, dstL, None, dispR)
+        dispL = stereo_matcherL.compute(dstL_gray, dstR_gray)
+        dispR = stereo_matcherR.compute(dstR_gray, dstL_gray)
+        filtered_disp = wls_filter.filter(dispL, dstL_gray, None, dispR)
         disp_gray = cv2.normalize(src=filtered_disp,
                                   dst=None,
                                   alpha=0,
                                   beta=255,
                                   norm_type=cv2.NORM_MINMAX,
                                   dtype=cv2.CV_8U)
+
+        # Crop disparity map
+        x, y, w, h = valid_ROI
+        disp_gray = disp_gray[y:y + h, x:x + w]
 
         disp_color = cv2.applyColorMap(disp_gray, cv2.COLORMAP_JET)
 
