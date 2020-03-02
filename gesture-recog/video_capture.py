@@ -130,18 +130,27 @@ def main():
         # Set up context and socket
         context = zmq.Context()
         sock = nt.create_socket_bind(context, port)
+
+        """
         # Send connection message to master and wait for a confirmation
         print('Waiting on port {}...'.format(port))
         sock.send_string('connection accepted')
         print('Connection established with master, waiting for the other sensor...')
         sig = sock.recv_string()
         print('Master: {}'.format(sig))
+        """
 
         while True:
+            print('Waiting on port {}...'.format(port))
+            sig = sock.recv_string()
+            print('Master: {}'.format(sig))
+
+            """
             print('Waiting for a command...')
             cmd = int(sock.recv_string())
             if cmd == 4:
                 break
+            """
 
             # Start streaming
             stream = stream_from_picamera if not WEBCAM else stream_from_webcam

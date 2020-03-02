@@ -19,6 +19,9 @@ SQUARE_LEN = 26.5  # mm
 # Folders to store calibration data
 CALIB_FILE = "../calibration-data/calib"
 
+# Folders to store disparity data
+DISP_FILE = "../calibration-data/disp"
+
 # Resolution
 RES = (360, 288)
 
@@ -42,14 +45,15 @@ def user_input() -> int:
     print('=' * 50)
     print('1 - Collect images for calibration')
     print('2 - Perform calibration')
-    print('3 - Real time disparity map')
-    print('4 - Exit')
+    print('3 - Disparity map tuning on sample images')
+    print('4 - Real time disparity map')
+    print('5 - Exit')
 
     while True:
         try:
-            sel = input('Select one of the options [1, 2, 3, 4]: ')
+            sel = input('Select one of the options [1, 2, 3, 4, 5]: ')
             sel = int(sel)
-            if sel not in [1, 2, 3, 4]:
+            if sel not in [1, 2, 3, 4, 5]:
                 print('The option inserted is not valid, retry.')
             else:
                 break
@@ -83,10 +87,13 @@ def main():
               .format(ipaddrL, L_PORT, ipaddrR, R_PORT))
         socks = {'L': nt.create_socket_connect(context, ipaddrL, L_PORT),
                  'R': nt.create_socket_connect(context, ipaddrR, R_PORT)}
+
+        """
         # Wait for connection message from both sensors
         nt.concurrent_recv(socks)
         print('Connected to both sensors')
         nt.concurrent_send(socks, 'both connected')
+        """
 
         # Display the title of the tool in ASCII art
         print_title()
@@ -94,18 +101,25 @@ def main():
         while True:
             # Display action menu and ask for user input
             sel = user_input()
+
+            """
             # Send command to sensors, unless user chose to calibrate cameras (server-side only)
             if sel != 2:
                 nt.concurrent_send(socks, str(sel))
+            """
 
             # Invoke corresponding function
             if sel == 1:
+                nt.concurrent_send(socks, 'connected')
                 ct.capture_images(socks, img_folders, RES)
             elif sel == 2:
                 ct.calibrate_stereo_camera(img_folders, PATTERN_SIZE, SQUARE_LEN, CALIB_FILE, RES)
             elif sel == 3:
-                ct.realtime_disp_map(socks, CALIB_FILE, RES)
+                ct.disp_map_tuning(socks, CALIB_FILE, DISP_FILE, RES)
             elif sel == 4:
+                nt.concurrent_send(socks, 'connected')
+                ct.realtime_disp_map(socks, CALIB_FILE, DISP_FILE, RES)
+            elif sel == 5:
                 break
     except KeyboardInterrupt:
         print('\nTermination enforced manually')

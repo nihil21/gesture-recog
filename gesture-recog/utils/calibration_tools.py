@@ -311,36 +311,186 @@ def calibrate_single_camera(img_points: List[np.ndarray],
     return cam_mtx, dist
 
 
+def disp_map_tuning(socks: Dict[str, zmq.Socket],
+                    calib_file: str,
+                    disp_file: str,
+                    res: Tuple[int, int]) -> None:
+    """Allows to tune the disparity map
+        :param socks: dictionary containing the two zmq sockets for the two sensors, identified by a label ('L'/'R')
+        :param calib_file: path to the file in which calibration data will be saved
+        :param disp_file: path to the file in which stereo matcher parameters will be saved
+        :param res: tuple representing the desired resolution to display images"""
+    print('Disparity map tuning...')
+
+    # Load calibration data
+    try:
+        calib_data = np.load(calib_file + '.npz')
+        mapxL = calib_data['mapxL']
+        mapyL = calib_data['mapyL']
+        mapxR = calib_data['mapxR']
+        mapyR = calib_data['mapyR']
+        cam_mtxL = calib_data['cam_mtxL']
+        cam_mtxR = calib_data['cam_mtxR']
+        trasl_mtx = calib_data['trasl_mtx']
+        print('Calibration data loaded from file')
+    except IOError:
+        print('Could not load calibration data, exiting...')
+        return
+
+    # Create named window and sliders for tuning
+    window_label = 'Disparity tuning'
+    MDS_label = 'Minimum Disparity'
+    NOD_label = 'Number of Disparities'
+    SWS_label = 'SAD window size'
+    D12MD_label = 'Disp12MaxDiff'
+    UR_label = 'Uniqueness Ratio'
+    SPWS_label = 'Speckle window size'
+    SR_label = 'Speckle range'
+    PFC_label = 'PreFilter Cap'
+    cv2.namedWindow(window_label)
+    cv2.createTrackbar(MDS_label, window_label, 0, 20, lambda *args: None)
+    cv2.createTrackbar(NOD_label, window_label, 0, 144, lambda *args: None)
+    cv2.createTrackbar(SWS_label, window_label, 1, 15, lambda *args: None)
+    cv2.createTrackbar(D12MD_label, window_label, 0, 10, lambda *args: None)
+    cv2.createTrackbar(UR_label, window_label, 0, 20, lambda *args: None)
+    cv2.createTrackbar(SPWS_label, window_label, 0, 100, lambda *args: None)
+    cv2.createTrackbar(SR_label, window_label, 0, 10, lambda *args: None)
+    cv2.createTrackbar(PFC_label, window_label, 0, 63, lambda *args: None)
+
+    while True:
+        # Retrieve values set by trackers
+        MDS = cv2.getTrackbarPos(MDS_label, window_label)
+        # Convert NOD to next multiple of 16
+        NOD = cv2.getTrackbarPos(NOD_label, window_label)
+        NOD = NOD - (NOD % 16) + 16
+        # Convert SWS to next odd number
+        SWS = cv2.getTrackbarPos(SWS_label, window_label)
+        SWS = SWS - (SWS % 2) + 2
+        P1 = 8 * SWS ** 2
+        P2 = 32 * SWS ** 2
+        D12MD = cv2.getTrackbarPos(D12MD_label, window_label)
+        UR = cv2.getTrackbarPos(UR_label, window_label)
+        SPWS = cv2.getTrackbarPos(SPWS_label, window_label)
+        SR = cv2.getTrackbarPos(SR_label, window_label)
+        PFC = cv2.getTrackbarPos(PFC_label, window_label)
+
+        # Create and configure left and right stereo matchers
+        stereo_matcherL = cv2.StereoSGBM_create(
+            minDisparity=MDS,
+            numDisparities=NOD,
+            blockSize=SWS,
+            P1=P1,
+            P2=P2,
+            disp12MaxDiff=D12MD,
+            uniquenessRatio=UR,
+            speckleWindowSize=SPWS,
+            speckleRange=SR,
+            preFilterCap=PFC
+        )
+        # noinspection PyUnresolvedReferences
+        stereo_matcherR = cv2.ximgproc.createRightMatcher(stereo_matcherL)
+
+        # Filter parameters
+        LAMBDA = 80000
+        SIGMA = 1.2
+        # Create filter
+        # noinspection PyUnresolvedReferences
+        wls_filter = cv2.ximgproc.createDisparityWLSFilter(matcher_left=stereo_matcherL)
+        wls_filter.setLambda(LAMBDA)
+        wls_filter.setSigmaColor(SIGMA)
+
+        # Load sample frames
+        frameL = cv2.imread('../disp-samples/frameL.jpg')
+        frameR = cv2.imread('../disp-samples/frameR.jpg')
+
+        # Undistort and rectify
+        dstL = cv2.remap(frameL, mapxL, mapyL, cv2.INTER_LINEAR)
+        dstR = cv2.remap(frameR, mapxR, mapyR, cv2.INTER_LINEAR)
+
+        # Convert to GRAY
+        dstL_gray = cv2.cvtColor(dstL, cv2.COLOR_BGR2GRAY)
+        dstR_gray = cv2.cvtColor(dstR, cv2.COLOR_BGR2GRAY)
+
+        # Compute disparities
+        dispL = stereo_matcherL.compute(dstL_gray, dstR_gray)
+        dispR = stereo_matcherR.compute(dstR_gray, dstL_gray)
+        filtered_disp = wls_filter.filter(dispL, dstL_gray, None, dispR)
+        disp_gray = cv2.normalize(src=filtered_disp,
+                                  dst=None,
+                                  alpha=0,
+                                  beta=255,
+                                  norm_type=cv2.NORM_MINMAX,
+                                  dtype=cv2.CV_8U)
+
+        disp = cv2.applyColorMap(disp_gray, cv2.COLORMAP_JET)
+
+        # Display resized frames and disparity maps
+        disp_tune = np.hstack((cv2.resize(dstL, res),
+                               cv2.resize(disp, res)))
+
+        cv2.imshow(window_label, disp_tune)
+
+        # If 'q' is pressed, save parameters to file and exit
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            np.savez_compressed(file=disp_file, MDS=MDS, NOD=NOD, SWS=SWS,
+                                D12MD=D12MD, UR=UR, SPWS=SPWS, SR=SR, PFC=PFC)
+            print('Stereo matcher parameters saved to file')
+            break
+
+    cv2.destroyAllWindows()
+
+
 def realtime_disp_map(socks: Dict[str, zmq.Socket],
                       calib_file: str,
+                      disp_file: str,
                       res: Tuple[int, int]) -> None:
     """Displays a real-time disparity map
         :param socks: dictionary containing the two zmq sockets for the two sensors, identified by a label ('L'/'R')
         :param calib_file: path to the file in which calibration data will be saved
+        :param disp_file: path to the file in which stereo matcher parameters will be saved
         :param res: tuple representing the desired resolution to display images"""
     print('Displaying real-time disparity map...')
 
     # Load calibration data
-    calib_data = np.load(calib_file + '.npz')
-    mapxL = calib_data['mapxL']
-    mapyL = calib_data['mapyL']
-    mapxR = calib_data['mapxR']
-    mapyR = calib_data['mapyR']
-    valid_ROIL = calib_data['valid_ROIL']
-    valid_ROIR = calib_data['valid_ROIR']
-    print('Calibration data loaded from file')
+    try:
+        calib_data = np.load(calib_file + '.npz')
+        mapxL = calib_data['mapxL']
+        mapyL = calib_data['mapyL']
+        mapxR = calib_data['mapxR']
+        mapyR = calib_data['mapyR']
+        valid_ROIL = calib_data['valid_ROIL']
+        valid_ROIR = calib_data['valid_ROIR']
+        print('Calibration data loaded from file')
+    except IOError:
+        print('Could not load calibration data, exiting...')
+        return
 
-    # Stereo matcher parameters
-    MDS = 8
-    NOD = 48
-    SWS = 7
+    # Load disparity data
+    try:
+        disp_data = np.load(disp_file + '.npz')
+        # Saved stereo matcher parameters
+        MDS = disp_data['MDS']
+        NOD = disp_data['NOD']
+        SWS = disp_data['SWS']
+        D12MD = disp_data['D12MD']
+        UR = disp_data['UR']
+        SPWS = disp_data['SPWS']
+        SR = disp_data['SR']
+        PFC = disp_data['PFC']
+        print('Stereo matcher parameters loaded from file')
+    except IOError:
+        print('Failed to load stereo matcher parameters, default ones will be used')
+        # Default stereo matcher parameters
+        MDS = 8
+        NOD = 48
+        SWS = 7
+        D12MD = 1
+        UR = 10
+        SPWS = 5
+        SR = 2
+        PFC = 29
     P1 = 8 * SWS ** 2
     P2 = 32 * SWS ** 2
-    D12MD = 1
-    UR = 10
-    SPWS = 5
-    SR = 2
-    PFC = 29
 
     # Create and configure left and right stereo matchers
     stereo_matcherL = cv2.StereoSGBM_create(
@@ -355,20 +505,21 @@ def realtime_disp_map(socks: Dict[str, zmq.Socket],
         speckleRange=SR,
         preFilterCap=PFC
     )
+    # noinspection PyUnresolvedReferences
     stereo_matcherR = cv2.ximgproc.createRightMatcher(stereo_matcherL)
 
     # Filter parameters
-    lmbda = 80000
-    sigma = 1.2
-
+    LAMBDA = 80000
+    SIGMA = 1.2
     # Create filter
+    # noinspection PyUnresolvedReferences
     wls_filter = cv2.ximgproc.createDisparityWLSFilter(matcher_left=stereo_matcherL)
-    wls_filter.setLambda(lmbda)
-    wls_filter.setSigmaColor(sigma)
+    wls_filter.setLambda(LAMBDA)
+    wls_filter.setSigmaColor(SIGMA)
 
     # Compute valid ROI
-    valid_ROI = cv2.getValidDisparityROI(roi1=valid_ROIL,
-                                         roi2=valid_ROIR,
+    valid_ROI = cv2.getValidDisparityROI(roi1=tuple(valid_ROIL),
+                                         roi2=tuple(valid_ROIR),
                                          minDisparity=MDS,
                                          numberOfDisparities=NOD,
                                          SADWindowSize=SWS)
@@ -429,3 +580,17 @@ def realtime_disp_map(socks: Dict[str, zmq.Socket],
 
     nt.concurrent_flush(socks)
     cv2.destroyAllWindows()
+
+
+def compute_depth(disp_point: int,
+                  cam_mtxL: np.ndarray,
+                  cam_mtxR: np.ndarray,
+                  trasl_mtx: np.ndarray) -> float:
+    baseline = abs(trasl_mtx[0][0])
+    alpha_uL = cam_mtxL[0][0]
+    u_0L = cam_mtxL[0][2]
+    alpha_uR = cam_mtxR[0][0]
+    u_0R = cam_mtxR[0][2]
+    alpha_u = (alpha_uL + alpha_uR) / 2
+
+    return alpha_u * baseline / (disp_point + u_0R - u_0L)
