@@ -329,17 +329,65 @@ def disp_map_tuning(socks: Dict[str, zmq.Socket],
         mapyL = calib_data['mapyL']
         mapxR = calib_data['mapxR']
         mapyR = calib_data['mapyR']
-        cam_mtxL = calib_data['cam_mtxL']
-        cam_mtxR = calib_data['cam_mtxR']
-        trasl_mtx = calib_data['trasl_mtx']
+        valid_ROIL = calib_data['valid_ROIL']
+        valid_ROIR = calib_data['valid_ROIR']
         print('Calibration data loaded from file')
     except IOError:
         print('Could not load calibration data, exiting...')
         return
 
+    # Wait for ready signal from sensors
+    nt.concurrent_recv(socks)
+    print('Both sensors are ready')
+
+    # Initialize variables for countdown
+    n_sec, tot_sec = 0, 4
+    str_sec = '4321'
+
+    # Synchronize sensors with a start signal
+    nt.concurrent_send(socks, 'start')
+
+    # Save start time
+    start_time = datetime.now()
+
+    frameL, frameR = None, None
+    while n_sec < tot_sec:
+        # Get frames from both cameras
+        frameL, frameR = nt.concurrent_recv_frame(socks)
+        # Resize frames
+        res_frameL = cv2.resize(frameL, res)
+        res_frameR = cv2.resize(frameR, res)
+
+        # Draw on screen the current remaining seconds
+        cv2.putText(img=res_frameL,
+                    text=str_sec[n_sec],
+                    org=(int(10), int(40)),
+                    fontFace=cv2.FONT_HERSHEY_DUPLEX,
+                    fontScale=1,
+                    color=(255, 255, 255),
+                    thickness=3,
+                    lineType=cv2.LINE_AA)
+
+        # If time elapsed is greater than one second, update 'n_sec'
+        time_elapsed = (datetime.now() - start_time).total_seconds()
+        if time_elapsed >= 1:
+            n_sec += 1
+            start_time = datetime.now()
+
+        # Display side by side the frames
+        frames = np.hstack((res_frameL, res_frameR))
+        cv2.imshow('Left and right frames', frames)
+        cv2.waitKey(1)
+    cv2.destroyAllWindows()
+
+    # When countdown ends, streaming is stopped, sockets are flushed and last frames are kept
+    nt.concurrent_send(socks, 'term')
+    nt.concurrent_flush(socks)
+
     # Create named window and sliders for tuning
     window_label = 'Disparity tuning'
     MDS_label = 'Minimum Disparity'
+    MDS_label_neg = 'Minimum Disparity (negative)'
     NOD_label = 'Number of Disparities'
     SWS_label = 'SAD window size'
     D12MD_label = 'Disp12MaxDiff'
@@ -348,7 +396,8 @@ def disp_map_tuning(socks: Dict[str, zmq.Socket],
     SR_label = 'Speckle range'
     PFC_label = 'PreFilter Cap'
     cv2.namedWindow(window_label)
-    cv2.createTrackbar(MDS_label, window_label, 0, 20, lambda *args: None)
+    cv2.createTrackbar(MDS_label, window_label, 0, 40, lambda *args: None)
+    cv2.createTrackbar(MDS_label_neg, window_label, 0, 40, lambda *args: None)
     cv2.createTrackbar(NOD_label, window_label, 0, 144, lambda *args: None)
     cv2.createTrackbar(SWS_label, window_label, 1, 15, lambda *args: None)
     cv2.createTrackbar(D12MD_label, window_label, 0, 10, lambda *args: None)
@@ -360,6 +409,9 @@ def disp_map_tuning(socks: Dict[str, zmq.Socket],
     while True:
         # Retrieve values set by trackers
         MDS = cv2.getTrackbarPos(MDS_label, window_label)
+        MDS_neg = cv2.getTrackbarPos(MDS_label_neg, window_label)
+        if MDS == 0:
+            MDS = -MDS_neg
         # Convert NOD to next multiple of 16
         NOD = cv2.getTrackbarPos(NOD_label, window_label)
         NOD = NOD - (NOD % 16) + 16
@@ -399,22 +451,26 @@ def disp_map_tuning(socks: Dict[str, zmq.Socket],
         wls_filter.setLambda(LAMBDA)
         wls_filter.setSigmaColor(SIGMA)
 
-        # Load sample frames
-        frameL = cv2.imread('../disp-samples/frameL.jpg')
-        frameR = cv2.imread('../disp-samples/frameR.jpg')
+        # Compute valid ROI
+        valid_ROI = cv2.getValidDisparityROI(roi1=tuple(valid_ROIL),
+                                             roi2=tuple(valid_ROIR),
+                                             minDisparity=MDS,
+                                             numberOfDisparities=NOD,
+                                             SADWindowSize=SWS)
 
         # Undistort and rectify
         dstL = cv2.remap(frameL, mapxL, mapyL, cv2.INTER_LINEAR)
         dstR = cv2.remap(frameR, mapxR, mapyR, cv2.INTER_LINEAR)
 
-        # Convert to GRAY
-        dstL_gray = cv2.cvtColor(dstL, cv2.COLOR_BGR2GRAY)
-        dstR_gray = cv2.cvtColor(dstR, cv2.COLOR_BGR2GRAY)
+        # Crop frames
+        x, y, w, h = valid_ROI
+        dstL = dstL[y:y + h, x:x + w]
+        dstR = dstR[y:y + h, x:x + w]
 
         # Compute disparities
-        dispL = stereo_matcherL.compute(dstL_gray, dstR_gray)
-        dispR = stereo_matcherR.compute(dstR_gray, dstL_gray)
-        filtered_disp = wls_filter.filter(dispL, dstL_gray, None, dispR)
+        dispL = stereo_matcherL.compute(dstL, dstR)
+        dispR = stereo_matcherR.compute(dstR, dstL)
+        filtered_disp = wls_filter.filter(dispL, dstL, None, dispR)
         disp_gray = cv2.normalize(src=filtered_disp,
                                   dst=None,
                                   alpha=0,
@@ -425,9 +481,12 @@ def disp_map_tuning(socks: Dict[str, zmq.Socket],
         disp = cv2.applyColorMap(disp_gray, cv2.COLORMAP_JET)
 
         # Display resized frames and disparity maps
+        frames = np.hstack((cv2.resize(dstL, res),
+                            cv2.resize(dstR, res)))
         disp_tune = np.hstack((cv2.resize(dstL, res),
                                cv2.resize(disp, res)))
 
+        cv2.imshow("Frames", frames)
         cv2.imshow(window_label, disp_tune)
 
         # If 'q' is pressed, save parameters to file and exit
@@ -443,11 +502,13 @@ def disp_map_tuning(socks: Dict[str, zmq.Socket],
 def realtime_disp_map(socks: Dict[str, zmq.Socket],
                       calib_file: str,
                       disp_file: str,
+                      thresh: Tuple[int, int],
                       res: Tuple[int, int]) -> None:
     """Displays a real-time disparity map
         :param socks: dictionary containing the two zmq sockets for the two sensors, identified by a label ('L'/'R')
         :param calib_file: path to the file in which calibration data will be saved
         :param disp_file: path to the file in which stereo matcher parameters will be saved
+        :param thresh: tuple containing minimum and maximum distances, used to threshold disparity
         :param res: tuple representing the desired resolution to display images"""
     print('Displaying real-time disparity map...')
 
@@ -458,6 +519,9 @@ def realtime_disp_map(socks: Dict[str, zmq.Socket],
         mapyL = calib_data['mapyL']
         mapxR = calib_data['mapxR']
         mapyR = calib_data['mapyR']
+        cam_mtxL = calib_data['cam_mtxL']
+        cam_mtxR = calib_data['cam_mtxR']
+        trasl_mtx = calib_data['trasl_mtx']
         valid_ROIL = calib_data['valid_ROIL']
         valid_ROIR = calib_data['valid_ROIR']
         print('Calibration data loaded from file')
@@ -539,14 +603,22 @@ def realtime_disp_map(socks: Dict[str, zmq.Socket],
         dstL = cv2.remap(frameL, mapxL, mapyL, cv2.INTER_LINEAR)
         dstR = cv2.remap(frameR, mapxR, mapyR, cv2.INTER_LINEAR)
 
-        # Convert to GRAY
-        dstL_gray = cv2.cvtColor(dstL, cv2.COLOR_BGR2GRAY)
-        dstR_gray = cv2.cvtColor(dstR, cv2.COLOR_BGR2GRAY)
+        # Crop frames
+        x, y, w, h = valid_ROI
+        dstL = dstL[y:y + h, x:x + w]
+        dstR = dstR[y:y + h, x:x + w]
 
-        # Compute disparities
-        dispL = stereo_matcherL.compute(dstL_gray, dstR_gray)
-        dispR = stereo_matcherR.compute(dstR_gray, dstL_gray)
-        filtered_disp = wls_filter.filter(dispL, dstL_gray, None, dispR)
+        # Compute disparities concurrently
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futureL = executor.submit(stereo_matcherL.compute, dstL, dstR)
+            futureR = executor.submit(stereo_matcherR.compute, dstR, dstL)
+            futures = {futureL, futureR}
+            for future in as_completed(futures):
+                if future == futureL:
+                    dispL = future.result()
+                else:
+                    dispR = future.result()
+        filtered_disp = wls_filter.filter(dispL, dstL, None, dispR)
         disp_gray = cv2.normalize(src=filtered_disp,
                                   dst=None,
                                   alpha=0,
@@ -554,27 +626,44 @@ def realtime_disp_map(socks: Dict[str, zmq.Socket],
                                   norm_type=cv2.NORM_MINMAX,
                                   dtype=cv2.CV_8U)
 
-        # Crop disparity map
-        x, y, w, h = valid_ROI
-        disp_gray = disp_gray[y:y + h, x:x + w]
-
+        # Apply colormap to disparity
         disp_color = cv2.applyColorMap(disp_gray, cv2.COLORMAP_JET)
+
+        # Threshold function
+        def distance_threshold_fn(p):
+            depth = compute_depth(disp_point=p,
+                                  baseline=abs(trasl_mtx[0][0]),
+                                  alpha_uL=cam_mtxL[0][0],
+                                  alpha_uR=cam_mtxR[0][0],
+                                  u_0L=cam_mtxL[0][2],
+                                  u_0R=cam_mtxR[0][2])
+            if thresh[0] <= depth <= thresh[1]:
+                return 255
+            else:
+                return 0
+
+        # Converting distance_threshold_fn to Python's ufunc in order to improve performance
+        distance_threshold_ufn = np.frompyfunc(distance_threshold_fn, 1, 1)
+
+        # Segment disparity
+        hand_mask = distance_threshold_ufn(disp_gray).astype(np.uint8)
+        hand = cv2.bitwise_and(dstL.astype(np.uint8), dstL.astype(np.uint8), mask=hand_mask)
 
         # Display resized frames and disparity maps
         frames = np.hstack((cv2.resize(dstL, res),
                             cv2.resize(dstR, res)))
-        res_disp_gray = cv2.resize(disp_gray, res)
         res_disp_color = cv2.resize(disp_color, res)
+        res_hand = cv2.resize(hand, res)
 
         cv2.imshow('Left and right frame', frames)
-        cv2.imshow('Disparity [Gray]', res_disp_gray)
-        cv2.imshow('Disparity [Color]', res_disp_color)
+        cv2.imshow('Disparity', res_disp_color)
+        cv2.imshow("Hand", res_hand)
 
         # When 'q' is pressed, save current frames and disparity maps to file and break the loop
         if cv2.waitKey(1) & 0xFF == ord('q'):
             cv2.imwrite('../disp-samples/Stereo_image.jpg', frames)
-            cv2.imwrite('../disp-samples/Disparity_gray.jpg', res_disp_gray)
-            cv2.imwrite('../disp-samples/Disparity_color.jpg', res_disp_color)
+            cv2.imwrite('../disp-samples/Disparity.jpg', res_disp_color)
+            cv2.imwrite('../disp-samples/Hand.jpg', res_hand)
             nt.concurrent_send(socks, 'term')
             break
 
@@ -583,14 +672,21 @@ def realtime_disp_map(socks: Dict[str, zmq.Socket],
 
 
 def compute_depth(disp_point: int,
-                  cam_mtxL: np.ndarray,
-                  cam_mtxR: np.ndarray,
-                  trasl_mtx: np.ndarray) -> float:
-    baseline = abs(trasl_mtx[0][0])
-    alpha_uL = cam_mtxL[0][0]
-    u_0L = cam_mtxL[0][2]
-    alpha_uR = cam_mtxR[0][0]
-    u_0R = cam_mtxR[0][2]
+                  baseline: float,
+                  alpha_uL: float,
+                  alpha_uR: float,
+                  u_0L: float,
+                  u_0R: float) -> float:
     alpha_u = (alpha_uL + alpha_uR) / 2
-
     return alpha_u * baseline / (disp_point + u_0R - u_0L)
+
+
+def process_segment():
+    seg_img = cv2.imread('../disp-samples/Hand.jpg')
+    gray_seg_img = cv2.cvtColor(seg_img, cv2.COLOR_BGR2GRAY)
+
+    contours, _ = cv2.findContours(gray_seg_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    cv2.drawContours(seg_img, contours, -1, (0, 255, 0), 3)
+    cv2.imshow("Img", seg_img)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()

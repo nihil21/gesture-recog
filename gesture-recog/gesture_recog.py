@@ -25,6 +25,9 @@ DISP_FILE = "../calibration-data/disp"
 # Resolution
 RES = (360, 288)
 
+# Threshold
+THRESH = (50, 150)  # mm
+
 
 def print_title():
     print('  ________                 __                                __________                            ')
@@ -88,25 +91,12 @@ def main():
         socks = {'L': nt.create_socket_connect(context, ipaddrL, L_PORT),
                  'R': nt.create_socket_connect(context, ipaddrR, R_PORT)}
 
-        """
-        # Wait for connection message from both sensors
-        nt.concurrent_recv(socks)
-        print('Connected to both sensors')
-        nt.concurrent_send(socks, 'both connected')
-        """
-
         # Display the title of the tool in ASCII art
         print_title()
 
         while True:
             # Display action menu and ask for user input
             sel = user_input()
-
-            """
-            # Send command to sensors, unless user chose to calibrate cameras (server-side only)
-            if sel != 2:
-                nt.concurrent_send(socks, str(sel))
-            """
 
             # Invoke corresponding function
             if sel == 1:
@@ -115,10 +105,11 @@ def main():
             elif sel == 2:
                 ct.calibrate_stereo_camera(img_folders, PATTERN_SIZE, SQUARE_LEN, CALIB_FILE, RES)
             elif sel == 3:
+                nt.concurrent_send(socks, 'connected')
                 ct.disp_map_tuning(socks, CALIB_FILE, DISP_FILE, RES)
             elif sel == 4:
                 nt.concurrent_send(socks, 'connected')
-                ct.realtime_disp_map(socks, CALIB_FILE, DISP_FILE, RES)
+                ct.realtime_disp_map(socks, CALIB_FILE, DISP_FILE, THRESH, RES)
             elif sel == 5:
                 break
     except KeyboardInterrupt:
