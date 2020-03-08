@@ -458,36 +458,15 @@ def disp_map_tuning(socks: Dict[str, zmq.Socket],
                                              numberOfDisparities=NOD,
                                              SADWindowSize=SWS)
 
-        # Undistort and rectify
-        dstL = cv2.remap(frameL, mapxL, mapyL, cv2.INTER_LINEAR)
-        dstR = cv2.remap(frameR, mapxR, mapyR, cv2.INTER_LINEAR)
+        disp, disp_gray, dstL, dstR = compute_disparity(frameL, frameR, mapxL, mapxR, mapyL, mapyR, stereo_matcherL,
+                                                        stereo_matcherR, valid_ROI, wls_filter)
 
-        # Crop frames
-        x, y, w, h = valid_ROI
-        dstL = dstL[y:y + h, x:x + w]
-        dstR = dstR[y:y + h, x:x + w]
-
-        # Compute disparities
-        dispL = stereo_matcherL.compute(dstL, dstR)
-        dispR = stereo_matcherR.compute(dstR, dstL)
-        filtered_disp = wls_filter.filter(dispL, dstL, None, dispR)
-        disp_gray = cv2.normalize(src=filtered_disp,
-                                  dst=None,
-                                  alpha=0,
-                                  beta=255,
-                                  norm_type=cv2.NORM_MINMAX,
-                                  dtype=cv2.CV_8U)
-
-        disp = cv2.applyColorMap(disp_gray, cv2.COLORMAP_JET)
-
-        # Display resized frames and disparity maps
-        frames = np.hstack((cv2.resize(dstL, res),
-                            cv2.resize(dstR, res)))
-        disp_tune = np.hstack((cv2.resize(dstL, res),
-                               cv2.resize(disp, res)))
-
-        cv2.imshow("Frames", frames)
-        cv2.imshow(window_label, disp_tune)
+        # Stack resized frames and disparity map and display them
+        window = np.vstack((np.hstack((cv2.resize(dstL, res),
+                                       cv2.resize(dstR, res))),
+                            np.hstack((cv2.resize(dstL, res),
+                                       cv2.resize(disp, res)))))
+        cv2.imshow(window_label, window)
 
         # If 'q' is pressed, save parameters to file and exit
         if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -599,35 +578,9 @@ def realtime_disp_map(socks: Dict[str, zmq.Socket],
         # Get frames from both cameras
         frameL, frameR = nt.concurrent_recv_frame(socks)
 
-        # Undistort and rectify
-        dstL = cv2.remap(frameL, mapxL, mapyL, cv2.INTER_LINEAR)
-        dstR = cv2.remap(frameR, mapxR, mapyR, cv2.INTER_LINEAR)
-
-        # Crop frames
-        x, y, w, h = valid_ROI
-        dstL = dstL[y:y + h, x:x + w]
-        dstR = dstR[y:y + h, x:x + w]
-
-        # Compute disparities concurrently
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            futureL = executor.submit(stereo_matcherL.compute, dstL, dstR)
-            futureR = executor.submit(stereo_matcherR.compute, dstR, dstL)
-            futures = {futureL, futureR}
-            for future in as_completed(futures):
-                if future == futureL:
-                    dispL = future.result()
-                else:
-                    dispR = future.result()
-        filtered_disp = wls_filter.filter(dispL, dstL, None, dispR)
-        disp_gray = cv2.normalize(src=filtered_disp,
-                                  dst=None,
-                                  alpha=0,
-                                  beta=255,
-                                  norm_type=cv2.NORM_MINMAX,
-                                  dtype=cv2.CV_8U)
-
-        # Apply colormap to disparity
-        disp_color = cv2.applyColorMap(disp_gray, cv2.COLORMAP_JET)
+        # Compute disparity map
+        disp, disp_gray, dstL, dstR = compute_disparity(frameL, frameR, mapxL, mapxR, mapyL, mapyR, stereo_matcherL,
+                                                        stereo_matcherR, valid_ROI, wls_filter)
 
         # Threshold function
         def distance_threshold_fn(p):
@@ -652,7 +605,7 @@ def realtime_disp_map(socks: Dict[str, zmq.Socket],
         # Display resized frames and disparity maps
         frames = np.hstack((cv2.resize(dstL, res),
                             cv2.resize(dstR, res)))
-        res_disp_color = cv2.resize(disp_color, res)
+        res_disp_color = cv2.resize(disp, res)
         res_hand = cv2.resize(hand, res)
 
         cv2.imshow('Left and right frame', frames)
@@ -671,13 +624,90 @@ def realtime_disp_map(socks: Dict[str, zmq.Socket],
     cv2.destroyAllWindows()
 
 
+# noinspection PyUnresolvedReferences
+def compute_disparity(frameL: np.ndarray,
+                      frameR: np.ndarray,
+                      mapxL: np.ndarray,
+                      mapxR: np.ndarray,
+                      mapyL: np.ndarray,
+                      mapyR: np.ndarray,
+                      stereo_matcherL: cv2.StereoSGBM,
+                      stereo_matcherR: cv2.StereoMatcher,
+                      valid_ROI: Tuple[int, int, int, int],
+                      wls_filter: cv2.ximgproc_DisparityWLSFilter) -> (np.ndarray, np.ndarray, np.ndarray, np.ndarray):
+    """This function computes the undistorted and rectified left and right frames of a stereo camera,
+    and the disparity maps, both in grayscale and colored
+        :param frameL: NumPy array representing the left image
+        :param frameR: NumPy array representing the right image
+        :param mapxL: NumPy array representing the homography to undistort and rectify the left image along x-axis
+        :param mapxR: NumPy array representing the homography to undistort and rectify the right image along x-axis
+        :param mapyL: NumPy array representing the homography to undistort and rectify the left image along y-axis
+        :param mapyR: NumPy array representing the homography to undistort and rectify the right image along y-axis
+        :param stereo_matcherL: SemiGlobal Block Matching stereo matcher based on the left image
+        :param stereo_matcherR: stereo matcher based on the right image, useful to filter the disparity map
+        :param valid_ROI: tuple of four integers representing the Region Of Interest
+                          common to both left and right images
+        :param wls_filter: Weighted Least Squares filter, useful to improve the quality of the disparity map
+
+        :return disp: colored disparity map
+        :return disp_gray: grayscale disparity map
+        :return dstL: NumPy array representing the undistorted and rectified left image
+        :return dstR: NumPy array representing the undistorted and rectified right image"""
+    # Undistort and rectify
+    dstL = cv2.remap(frameL, mapxL, mapyL, cv2.INTER_LINEAR)
+    dstR = cv2.remap(frameR, mapxR, mapyR, cv2.INTER_LINEAR)
+    # Crop frames
+    x, y, w, h = valid_ROI
+    dstL = dstL[y:y + h, x:x + w]
+    dstR = dstR[y:y + h, x:x + w]
+    # Convert to grayscale
+    dstL_gray = cv2.cvtColor(dstL, cv2.COLOR_BGR2GRAY)
+    dstR_gray = cv2.cvtColor(dstL, cv2.COLOR_BGR2GRAY)
+    # Enhance contrast using histogram equalization
+    dstL_gray = cv2.equalizeHist(dstL_gray)
+    dstR_gray = cv2.equalizeHist(dstR_gray)
+    # Compute disparities concurrently using the grayscale version with enhanced contrast
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futureL = executor.submit(stereo_matcherL.compute, dstL_gray, dstR_gray)
+        futureR = executor.submit(stereo_matcherR.compute, dstR_gray, dstL_gray)
+        futures = {futureL, futureR}
+        for future in as_completed(futures):
+            if future == futureL:
+                dispL = future.result()
+            else:
+                dispR = future.result()
+    filtered_disp = wls_filter.filter(dispL, dstL_gray, None, dispR)
+    disp_gray = cv2.normalize(src=filtered_disp,
+                              dst=None,
+                              alpha=0,
+                              beta=255,
+                              norm_type=cv2.NORM_MINMAX,
+                              dtype=cv2.CV_8U)
+    # Apply colormap to disparity
+    disp = cv2.applyColorMap(disp_gray, cv2.COLORMAP_JET)
+    return disp, disp_gray, dstL, dstR
+
+
 def compute_depth(disp_point: int,
                   baseline: float,
                   alpha_uL: float,
                   alpha_uR: float,
                   u_0L: float,
                   u_0R: float) -> float:
+    """This function, given a disparity value of a point and the camera parameters,
+    computes the corresponding depth of such point
+    :param disp_point: integer representing the disparity value of a point
+    :param baseline: float representing the distance between the two cameras
+    :param alpha_uL: float representing the alpha_u intrinsic parameter of the left camera
+    :param alpha_uR: float representing the alpha_u intrinsic parameter of the right camera
+    :param u_0L: float representing the u_0 intrinsic parameter of the left camera
+    :param u_0R: float representing the u_0 intrinsic parameter of the right camera
+
+    :return depth: float representing the depth of the given point"""
+
+    # Compute the average alpha_u
     alpha_u = (alpha_uL + alpha_uR) / 2
+    # Compute the depth
     return alpha_u * baseline / (disp_point + u_0R - u_0L)
 
 
