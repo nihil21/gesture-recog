@@ -4,7 +4,7 @@ import zmq
 import glob
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple, List, Optional
 from matplotlib import pyplot as plt
 from exceptions.error import ChessboardNotFoundError
 import utils.network_tools as nt
@@ -329,8 +329,6 @@ def disp_map_tuning(socks: Dict[str, zmq.Socket],
         mapyL = calib_data['mapyL']
         mapxR = calib_data['mapxR']
         mapyR = calib_data['mapyR']
-        valid_ROIL = calib_data['valid_ROIL']
-        valid_ROIR = calib_data['valid_ROIR']
         print('Calibration data loaded from file')
     except IOError:
         print('Could not load calibration data, exiting...')
@@ -390,21 +388,19 @@ def disp_map_tuning(socks: Dict[str, zmq.Socket],
     MDS_label_neg = 'Minimum Disparity (negative)'
     NOD_label = 'Number of Disparities'
     SWS_label = 'SAD window size'
-    D12MD_label = 'Disp12MaxDiff'
-    UR_label = 'Uniqueness Ratio'
-    SPWS_label = 'Speckle window size'
-    SR_label = 'Speckle range'
     PFC_label = 'PreFilter Cap'
     cv2.namedWindow(window_label)
     cv2.createTrackbar(MDS_label, window_label, 0, 40, lambda *args: None)
     cv2.createTrackbar(MDS_label_neg, window_label, 0, 40, lambda *args: None)
     cv2.createTrackbar(NOD_label, window_label, 0, 144, lambda *args: None)
     cv2.createTrackbar(SWS_label, window_label, 1, 15, lambda *args: None)
-    cv2.createTrackbar(D12MD_label, window_label, 0, 10, lambda *args: None)
-    cv2.createTrackbar(UR_label, window_label, 0, 20, lambda *args: None)
-    cv2.createTrackbar(SPWS_label, window_label, 0, 100, lambda *args: None)
-    cv2.createTrackbar(SR_label, window_label, 0, 10, lambda *args: None)
     cv2.createTrackbar(PFC_label, window_label, 0, 63, lambda *args: None)
+
+    # Parameters not tuned
+    D12MD = 1
+    UR = 10
+    SPWS = 7
+    SR = 2
 
     while True:
         # Retrieve values set by trackers
@@ -420,10 +416,6 @@ def disp_map_tuning(socks: Dict[str, zmq.Socket],
         SWS = SWS - (SWS % 2) + 2
         P1 = 8 * SWS ** 2
         P2 = 32 * SWS ** 2
-        D12MD = cv2.getTrackbarPos(D12MD_label, window_label)
-        UR = cv2.getTrackbarPos(UR_label, window_label)
-        SPWS = cv2.getTrackbarPos(SPWS_label, window_label)
-        SR = cv2.getTrackbarPos(SR_label, window_label)
         PFC = cv2.getTrackbarPos(PFC_label, window_label)
 
         # Create and configure left and right stereo matchers
@@ -451,22 +443,13 @@ def disp_map_tuning(socks: Dict[str, zmq.Socket],
         wls_filter.setLambda(LAMBDA)
         wls_filter.setSigmaColor(SIGMA)
 
-        # Compute valid ROI
-        valid_ROI = cv2.getValidDisparityROI(roi1=tuple(valid_ROIL),
-                                             roi2=tuple(valid_ROIR),
-                                             minDisparity=MDS,
-                                             numberOfDisparities=NOD,
-                                             SADWindowSize=SWS)
-
-        disp, disp_gray, dstL, dstR = compute_disparity(frameL, frameR, mapxL, mapxR, mapyL, mapyR, stereo_matcherL,
-                                                        stereo_matcherR, valid_ROI, wls_filter)
+        # Compute disparity map
+        disp, disp_gray, dstL, dstR = compute_disparity(frameL, frameR, mapxL, mapxR, mapyL, mapyR,
+                                                        stereo_matcherL, stereo_matcherR, wls_filter, None)
 
         # Stack resized frames and disparity map and display them
-        window = np.vstack((np.hstack((cv2.resize(dstL, res),
-                                       cv2.resize(dstR, res))),
-                            np.hstack((cv2.resize(dstL, res),
-                                       cv2.resize(disp, res)))))
-        cv2.imshow(window_label, window)
+        disp_tune = np.hstack((cv2.resize(dstL, res), cv2.resize(disp, res)))
+        cv2.imshow(window_label, disp_tune)
 
         # If 'q' is pressed, save parameters to file and exit
         if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -579,8 +562,8 @@ def realtime_disp_map(socks: Dict[str, zmq.Socket],
         frameL, frameR = nt.concurrent_recv_frame(socks)
 
         # Compute disparity map
-        disp, disp_gray, dstL, dstR = compute_disparity(frameL, frameR, mapxL, mapxR, mapyL, mapyR, stereo_matcherL,
-                                                        stereo_matcherR, valid_ROI, wls_filter)
+        disp, disp_gray, dstL, dstR = compute_disparity(frameL, frameR, mapxL, mapxR, mapyL, mapyR,
+                                                        stereo_matcherL, stereo_matcherR, wls_filter, valid_ROI)
 
         # Threshold function
         def distance_threshold_fn(p):
@@ -599,24 +582,24 @@ def realtime_disp_map(socks: Dict[str, zmq.Socket],
         distance_threshold_ufn = np.frompyfunc(distance_threshold_fn, 1, 1)
 
         # Segment disparity
-        hand_mask = distance_threshold_ufn(disp_gray).astype(np.uint8)
-        hand = cv2.bitwise_and(dstL.astype(np.uint8), dstL.astype(np.uint8), mask=hand_mask)
+        #hand_mask = distance_threshold_ufn(disp_gray).astype(np.uint8)
+        #hand = cv2.bitwise_and(dstL.astype(np.uint8), dstL.astype(np.uint8), mask=hand_mask)
 
         # Display resized frames and disparity maps
         frames = np.hstack((cv2.resize(dstL, res),
                             cv2.resize(dstR, res)))
         res_disp_color = cv2.resize(disp, res)
-        res_hand = cv2.resize(hand, res)
+        #res_hand = cv2.resize(hand, res)
 
         cv2.imshow('Left and right frame', frames)
         cv2.imshow('Disparity', res_disp_color)
-        cv2.imshow("Hand", res_hand)
+        #cv2.imshow("Hand", res_hand)
 
         # When 'q' is pressed, save current frames and disparity maps to file and break the loop
         if cv2.waitKey(1) & 0xFF == ord('q'):
             cv2.imwrite('../disp-samples/Stereo_image.jpg', frames)
             cv2.imwrite('../disp-samples/Disparity.jpg', res_disp_color)
-            cv2.imwrite('../disp-samples/Hand.jpg', res_hand)
+            #cv2.imwrite('../disp-samples/Hand.jpg', res_hand)
             nt.concurrent_send(socks, 'term')
             break
 
@@ -633,8 +616,11 @@ def compute_disparity(frameL: np.ndarray,
                       mapyR: np.ndarray,
                       stereo_matcherL: cv2.StereoSGBM,
                       stereo_matcherR: cv2.StereoMatcher,
-                      valid_ROI: Tuple[int, int, int, int],
-                      wls_filter: cv2.ximgproc_DisparityWLSFilter) -> (np.ndarray, np.ndarray, np.ndarray, np.ndarray):
+                      wls_filter: cv2.ximgproc_DisparityWLSFilter,
+                      valid_ROI: Optional[Tuple[int, int, int, int]] = None) -> (np.ndarray,
+                                                                                 np.ndarray,
+                                                                                 np.ndarray,
+                                                                                 np.ndarray):
     """This function computes the undistorted and rectified left and right frames of a stereo camera,
     and the disparity maps, both in grayscale and colored
         :param frameL: NumPy array representing the left image
@@ -645,9 +631,9 @@ def compute_disparity(frameL: np.ndarray,
         :param mapyR: NumPy array representing the homography to undistort and rectify the right image along y-axis
         :param stereo_matcherL: SemiGlobal Block Matching stereo matcher based on the left image
         :param stereo_matcherR: stereo matcher based on the right image, useful to filter the disparity map
-        :param valid_ROI: tuple of four integers representing the Region Of Interest
-                          common to both left and right images
         :param wls_filter: Weighted Least Squares filter, useful to improve the quality of the disparity map
+        :param valid_ROI: tuple of four integers representing the Region Of Interest
+                          common to both left and right images (optional)
 
         :return disp: colored disparity map
         :return disp_gray: grayscale disparity map
@@ -656,27 +642,24 @@ def compute_disparity(frameL: np.ndarray,
     # Undistort and rectify
     dstL = cv2.remap(frameL, mapxL, mapyL, cv2.INTER_LINEAR)
     dstR = cv2.remap(frameR, mapxR, mapyR, cv2.INTER_LINEAR)
-    # Crop frames
-    x, y, w, h = valid_ROI
-    dstL = dstL[y:y + h, x:x + w]
-    dstR = dstR[y:y + h, x:x + w]
-    # Convert to grayscale
-    dstL_gray = cv2.cvtColor(dstL, cv2.COLOR_BGR2GRAY)
-    dstR_gray = cv2.cvtColor(dstL, cv2.COLOR_BGR2GRAY)
-    # Enhance contrast using histogram equalization
-    dstL_gray = cv2.equalizeHist(dstL_gray)
-    dstR_gray = cv2.equalizeHist(dstR_gray)
+
+    # Crop frames if valid_ROI is provided
+    if valid_ROI is not None:
+        x, y, w, h = valid_ROI
+        dstL = dstL[y:y + h, x:x + w]
+        dstR = dstR[y:y + h, x:x + w]
+
     # Compute disparities concurrently using the grayscale version with enhanced contrast
     with ThreadPoolExecutor(max_workers=2) as executor:
-        futureL = executor.submit(stereo_matcherL.compute, dstL_gray, dstR_gray)
-        futureR = executor.submit(stereo_matcherR.compute, dstR_gray, dstL_gray)
+        futureL = executor.submit(stereo_matcherL.compute, dstL, dstR)
+        futureR = executor.submit(stereo_matcherR.compute, dstR, dstL)
         futures = {futureL, futureR}
         for future in as_completed(futures):
             if future == futureL:
                 dispL = future.result()
             else:
                 dispR = future.result()
-    filtered_disp = wls_filter.filter(dispL, dstL_gray, None, dispR)
+    filtered_disp = wls_filter.filter(dispL, dstL, None, dispR)
     disp_gray = cv2.normalize(src=filtered_disp,
                               dst=None,
                               alpha=0,

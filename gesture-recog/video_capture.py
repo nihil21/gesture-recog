@@ -18,7 +18,7 @@ L_PORT = 8000
 R_PORT = 8001
 
 # Camera size
-CAMERA_RESOLUTION = (192, 160)
+CAMERA_RESOLUTION = (240, 192)
 
 
 def stream_from_picamera(sock: zmq.Socket, flip: bool) -> None:
