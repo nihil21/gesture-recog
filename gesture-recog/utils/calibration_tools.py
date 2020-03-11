@@ -445,7 +445,7 @@ def disp_map_tuning(socks: Dict[str, zmq.Socket],
 
         # Compute disparity map
         disp, disp_gray, dstL, dstR = compute_disparity(frameL, frameR, mapxL, mapxR, mapyL, mapyR,
-                                                        stereo_matcherL, stereo_matcherR, wls_filter, None)
+                                                        stereo_matcherL, stereo_matcherR, wls_filter)
 
         # Stack resized frames and disparity map and display them
         disp_tune = np.hstack((cv2.resize(dstL, res), cv2.resize(disp, res)))

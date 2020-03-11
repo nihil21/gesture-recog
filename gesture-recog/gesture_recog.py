@@ -26,7 +26,7 @@ DISP_FILE = "../calibration-data/disp"
 RES = (360, 288)
 
 # Threshold
-THRESH = (50, 150)  # mm
+THRESH = (50, 100)  # mm
 
 
 def print_title():
