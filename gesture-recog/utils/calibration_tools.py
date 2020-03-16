@@ -11,12 +11,10 @@ import utils.network_tools as nt
 
 
 def capture_images(socks: Dict[str, zmq.Socket],
-                   folders: Dict[str, str],
-                   res: Tuple[int, int]) -> None:
+                   folders: Dict[str, str]) -> None:
     """Function which coordinates the capture of images from both cameras
         :param socks: dictionary containing the two zmq sockets for the two sensors, identified by a label ('L'/'R')
-        :param folders: dictionary containing the folder in which images will be saved, identified by a label
-        :param res: tuple representing the desired resolution to display images"""
+        :param folders: dictionary containing the folder in which images will be saved, identified by a label"""
     print('Collecting images of a chessboard for calibration...')
 
     # Wait for ready signal from sensors
@@ -36,14 +34,11 @@ def capture_images(socks: Dict[str, zmq.Socket],
     while n_pics < tot_pics:
         # Get frames from both cameras
         frameL, frameR = nt.concurrent_recv_frame(socks)
-        # Resize frames
-        res_frameL = cv2.resize(frameL, res)
-        res_frameR = cv2.resize(frameR, res)
 
         # Display counter on screen before saving frame
         if n_sec < tot_sec:
             # Draw on screen the current remaining seconds
-            cv2.putText(img=res_frameL,
+            cv2.putText(img=frameL,
                         text=str_sec[n_sec],
                         org=(int(10), int(40)),
                         fontFace=cv2.FONT_HERSHEY_DUPLEX,
@@ -52,7 +47,7 @@ def capture_images(socks: Dict[str, zmq.Socket],
                         thickness=3,
                         lineType=cv2.LINE_AA)
             # Draw on screen the current remaining pictures
-            cv2.putText(img=res_frameR,
+            cv2.putText(img=frameR,
                         text='{:d}/{:d}'.format(n_pics, tot_pics),
                         org=(int(10), int(40)),
                         fontFace=cv2.FONT_HERSHEY_DUPLEX,
@@ -81,7 +76,7 @@ def capture_images(socks: Dict[str, zmq.Socket],
             print('{:d}/{:d} images collected'.format(n_pics, tot_pics))
 
         # Display side by side the frames
-        frames = np.hstack((res_frameL, res_frameR))
+        frames = np.hstack((frameL, frameR))
         cv2.imshow('Left and right frames', frames)
 
         # If 'q' is pressed, or enough images are collected,
@@ -100,14 +95,12 @@ def capture_images(socks: Dict[str, zmq.Socket],
 def calibrate_stereo_camera(folders: Dict[str, str],
                             pattern_size: Tuple[int, int],
                             square_length: float,
-                            calib_file: str,
-                            res: Tuple[int, int]) -> None:
+                            calib_file: str) -> None:
     """Calibrates both cameras using pictures of a chessboard
         :param folders: dictionary containing the folder in which images will be saved, identified by a label
         :param pattern_size: size of the chessboard used for calibration
         :param square_length: float representing the length, in mm, of the square edge
-        :param calib_file: path to the file in which calibration data will be saved
-        :param res: tuple representing the desired resolution to display images"""
+        :param calib_file: path to the file in which calibration data will be saved"""
 
     # Get a list of images captured, divided by folder
     img_namesL, img_namesR = glob.glob(folders['L'] + '*.jpg'), glob.glob(folders['R'] + '*.jpg')
@@ -220,9 +213,9 @@ def calibrate_stereo_camera(folders: Dict[str, str],
             fig, ax = plt.subplots(nrows=2, ncols=2)
             fig.suptitle(stereo_img_names[i])
             # Plot the original images
-            ax[0][0].imshow(cv2.resize(stereo_img_drawn_corners[0], res, cv2.INTER_NEAREST))
+            ax[0][0].imshow(stereo_img_drawn_corners[0])
             ax[0][0].set_title('L frame')
-            ax[0][1].imshow(cv2.resize(stereo_img_drawn_corners[1], res, cv2.INTER_NEAREST))
+            ax[0][1].imshow(stereo_img_drawn_corners[1])
             ax[0][1].set_title('R frame')
 
             # Remap images using the mapping found after calibration
@@ -230,9 +223,9 @@ def calibrate_stereo_camera(folders: Dict[str, str],
             dstR = cv2.remap(stereo_img_drawn_corners[1], mapxR, mapyR, cv2.INTER_NEAREST)
 
             # Plot the undistorted images
-            ax[1][0].imshow(cv2.resize(dstL, res, cv2.INTER_NEAREST))
+            ax[1][0].imshow(dstL)
             ax[1][0].set_title('L frame undistorted')
-            ax[1][1].imshow(cv2.resize(dstR, res, cv2.INTER_NEAREST))
+            ax[1][1].imshow(dstR)
             ax[1][1].set_title('R frame undistorted')
 
             plt.show()
@@ -313,13 +306,11 @@ def calibrate_single_camera(img_points: List[np.ndarray],
 
 def disp_map_tuning(socks: Dict[str, zmq.Socket],
                     calib_file: str,
-                    disp_file: str,
-                    res: Tuple[int, int]) -> None:
+                    disp_file: str) -> None:
     """Allows to tune the disparity map
         :param socks: dictionary containing the two zmq sockets for the two sensors, identified by a label ('L'/'R')
         :param calib_file: path to the file in which calibration data will be saved
-        :param disp_file: path to the file in which stereo matcher parameters will be saved
-        :param res: tuple representing the desired resolution to display images"""
+        :param disp_file: path to the file in which stereo matcher parameters will be saved"""
     print('Disparity map tuning...')
 
     # Load calibration data
@@ -352,12 +343,9 @@ def disp_map_tuning(socks: Dict[str, zmq.Socket],
     while n_sec < tot_sec:
         # Get frames from both cameras
         frameL, frameR = nt.concurrent_recv_frame(socks)
-        # Resize frames
-        res_frameL = cv2.resize(frameL, res)
-        res_frameR = cv2.resize(frameR, res)
 
         # Draw on screen the current remaining seconds
-        cv2.putText(img=res_frameL,
+        cv2.putText(img=frameL,
                     text=str_sec[n_sec],
                     org=(int(10), int(40)),
                     fontFace=cv2.FONT_HERSHEY_DUPLEX,
@@ -373,7 +361,7 @@ def disp_map_tuning(socks: Dict[str, zmq.Socket],
             start_time = datetime.now()
 
         # Display side by side the frames
-        frames = np.hstack((res_frameL, res_frameR))
+        frames = np.hstack((frameL, frameR))
         cv2.imshow('Left and right frames', frames)
         cv2.waitKey(1)
     cv2.destroyAllWindows()
@@ -448,7 +436,7 @@ def disp_map_tuning(socks: Dict[str, zmq.Socket],
                                                         stereo_matcherL, stereo_matcherR, wls_filter)
 
         # Stack resized frames and disparity map and display them
-        disp_tune = np.hstack((cv2.resize(dstL, res), cv2.resize(disp, res)))
+        disp_tune = np.hstack((dstL, disp))
         cv2.imshow(window_label, disp_tune)
 
         # If 'q' is pressed, save parameters to file and exit
@@ -463,15 +451,11 @@ def disp_map_tuning(socks: Dict[str, zmq.Socket],
 
 def realtime_disp_map(socks: Dict[str, zmq.Socket],
                       calib_file: str,
-                      disp_file: str,
-                      thresh: Tuple[int, int],
-                      res: Tuple[int, int]) -> None:
+                      disp_file: str) -> None:
     """Displays a real-time disparity map
         :param socks: dictionary containing the two zmq sockets for the two sensors, identified by a label ('L'/'R')
         :param calib_file: path to the file in which calibration data will be saved
-        :param disp_file: path to the file in which stereo matcher parameters will be saved
-        :param thresh: tuple containing minimum and maximum distances, used to threshold disparity
-        :param res: tuple representing the desired resolution to display images"""
+        :param disp_file: path to the file in which stereo matcher parameters will be saved"""
     print('Displaying real-time disparity map...')
 
     # Load calibration data
@@ -481,9 +465,6 @@ def realtime_disp_map(socks: Dict[str, zmq.Socket],
         mapyL = calib_data['mapyL']
         mapxR = calib_data['mapxR']
         mapyR = calib_data['mapyR']
-        cam_mtxL = calib_data['cam_mtxL']
-        cam_mtxR = calib_data['cam_mtxR']
-        trasl_mtx = calib_data['trasl_mtx']
         valid_ROIL = calib_data['valid_ROIL']
         valid_ROIR = calib_data['valid_ROIR']
         print('Calibration data loaded from file')
@@ -550,6 +531,10 @@ def realtime_disp_map(socks: Dict[str, zmq.Socket],
                                          numberOfDisparities=NOD,
                                          SADWindowSize=SWS)
 
+    # Create MOG2 background subtractors for both frames
+    backSubL = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16)
+    backSubR = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16)
+
     # Wait for ready signal from sensors
     nt.concurrent_recv(socks)
     print('Both sensors are ready')
@@ -565,6 +550,11 @@ def realtime_disp_map(socks: Dict[str, zmq.Socket],
         disp, disp_gray, dstL, dstR = compute_disparity(frameL, frameR, mapxL, mapxR, mapyL, mapyR,
                                                         stereo_matcherL, stereo_matcherR, wls_filter, valid_ROI)
 
+        # Compute foreground mask based on both frames and update background
+        hand_maskL = backSubL.apply(dstL, learningRate=0.5)
+        hand_maskR = backSubR.apply(dstR, learningRate=0.5)
+
+        """
         # Threshold function
         def distance_threshold_fn(p):
             depth = compute_depth(disp_point=p,
@@ -582,24 +572,33 @@ def realtime_disp_map(socks: Dict[str, zmq.Socket],
         distance_threshold_ufn = np.frompyfunc(distance_threshold_fn, 1, 1)
 
         # Segment disparity
-        #hand_mask = distance_threshold_ufn(disp_gray).astype(np.uint8)
-        #hand = cv2.bitwise_and(dstL.astype(np.uint8), dstL.astype(np.uint8), mask=hand_mask)
+        hand_mask = distance_threshold_ufn(disp_gray).astype(np.uint8)
+        """
 
-        # Display resized frames and disparity maps
-        frames = np.hstack((cv2.resize(dstL, res),
-                            cv2.resize(dstR, res)))
-        res_disp_color = cv2.resize(disp, res)
-        #res_hand = cv2.resize(hand, res)
+        # Apply masks to frames
+        handL = cv2.bitwise_and(dstL.astype(np.uint8), dstL.astype(np.uint8), mask=hand_maskL)
+        handR = cv2.bitwise_and(dstR.astype(np.uint8), dstR.astype(np.uint8), mask=hand_maskR)
 
+        # Determine contours of hands
+        contoursL, _ = cv2.findContours(cv2.cvtColor(handL, cv2.COLOR_BGR2GRAY),
+                                        cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        cv2.drawContours(handL, contoursL, -1, color=(0, 255, 0), thickness=cv2.FILLED)
+        contoursR, _ = cv2.findContours(cv2.cvtColor(handR, cv2.COLOR_BGR2GRAY),
+                                        cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        cv2.drawContours(handR, contoursR, -1, color=(0, 255, 0), thickness=cv2.FILLED)
+
+        # Display frames and disparity maps
+        frames = np.hstack((dstL, dstR))
+        hand = np.hstack((handL, handR))
         cv2.imshow('Left and right frame', frames)
-        cv2.imshow('Disparity', res_disp_color)
-        #cv2.imshow("Hand", res_hand)
+        cv2.imshow('Disparity', disp)
+        cv2.imshow("Hand", hand)
 
         # When 'q' is pressed, save current frames and disparity maps to file and break the loop
         if cv2.waitKey(1) & 0xFF == ord('q'):
             cv2.imwrite('../disp-samples/Stereo_image.jpg', frames)
-            cv2.imwrite('../disp-samples/Disparity.jpg', res_disp_color)
-            #cv2.imwrite('../disp-samples/Hand.jpg', res_hand)
+            cv2.imwrite('../disp-samples/Disparity.jpg', disp)
+            cv2.imwrite('../disp-samples/Hand.jpg', hand)
             nt.concurrent_send(socks, 'term')
             break
 

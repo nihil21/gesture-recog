@@ -22,12 +22,6 @@ CALIB_FILE = "../calibration-data/calib"
 # Folders to store disparity data
 DISP_FILE = "../calibration-data/disp"
 
-# Resolution
-RES = (360, 288)
-
-# Threshold
-THRESH = (50, 100)  # mm
-
 
 def print_title():
     print('  ________                 __                                __________                            ')
@@ -101,15 +95,15 @@ def main():
             # Invoke corresponding function
             if sel == 1:
                 nt.concurrent_send(socks, 'connected')
-                ct.capture_images(socks, img_folders, RES)
+                ct.capture_images(socks, img_folders)
             elif sel == 2:
-                ct.calibrate_stereo_camera(img_folders, PATTERN_SIZE, SQUARE_LEN, CALIB_FILE, RES)
+                ct.calibrate_stereo_camera(img_folders, PATTERN_SIZE, SQUARE_LEN, CALIB_FILE)
             elif sel == 3:
                 nt.concurrent_send(socks, 'connected')
-                ct.disp_map_tuning(socks, CALIB_FILE, DISP_FILE, RES)
+                ct.disp_map_tuning(socks, CALIB_FILE, DISP_FILE)
             elif sel == 4:
                 nt.concurrent_send(socks, 'connected')
-                ct.realtime_disp_map(socks, CALIB_FILE, DISP_FILE, THRESH, RES)
+                ct.realtime_disp_map(socks, CALIB_FILE, DISP_FILE)
             elif sel == 5:
                 break
     except KeyboardInterrupt:
