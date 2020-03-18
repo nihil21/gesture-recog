@@ -109,9 +109,9 @@ def stream_from_webcam(sock: zmq.Socket, flip: bool) -> None:
 def main():
     # Construct argument parser and add arguments to it
     ap = argparse.ArgumentParser()
-    ap.add_argument("-o", "--orientation", required=True, help="left/right orientation of the sensor ('L'/'R')")
-    ap.add_argument("-f", "--flip", action="store_true", help="if set, image is flipped before it is sent to master "
-                                                              "(useful only in particular hardware setups)")
+    ap.add_argument('-o', '--orientation', required=True, help="left/right orientation of the sensor ('L'/'R')")
+    ap.add_argument('-f', '--flip', action='store_true', help='if set, image is flipped before it is sent to master '
+                                                              '(useful only in particular hardware setups)')
     args = vars(ap.parse_args())
 
     # Argument reading and check

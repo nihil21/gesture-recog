@@ -63,13 +63,13 @@ def user_input() -> int:
 def main():
     # Construct argument parser and add arguments to it
     ap = argparse.ArgumentParser()
-    ap.add_argument("-iL", "--ip_addressL", required=True, help="hostname of the left sensor")
-    ap.add_argument("-iR", "--ip_addressR", required=True, help="hostname of the right sensor")
+    ap.add_argument("-hL", "--hostnameL", required=True, help="hostname of the left sensor")
+    ap.add_argument("-hR", "--hostnameR", required=True, help="hostname of the right sensor")
     args = vars(ap.parse_args())
 
     # Argument reading and check
-    ipaddrL = args['ip_addressL']
-    ipaddrR = args['ip_addressR']
+    ipaddrL = args['hostnameL']
+    ipaddrR = args['hostnameR']
 
     # Create dictionary of image folders paths
     img_folders = {'L': L_IMG_FOLDER, 'R': R_IMG_FOLDER}
