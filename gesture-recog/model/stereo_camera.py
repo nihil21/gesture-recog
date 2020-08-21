@@ -292,13 +292,9 @@ class StereoCamera:
                                                                                                         (w, h),
                                                                                                         flags=flag)
         print('Stereo camera calibrated, error: {0:.5f}'.format(error))
-        rot_mtxL, rot_mtxR, proj_mtxL, proj_mtxR, disp_to_depth_mtx, valid_ROIL, valid_ROIR = cv2.stereoRectify(cam_mtxL,
-                                                                                                                distL,
-                                                                                                                cam_mtxR,
-                                                                                                                distR,
-                                                                                                                (w, h),
-                                                                                                                rot_mtx,
-                                                                                                                trasl_mtx)
+        rot_mtxL, rot_mtxR, proj_mtxL, proj_mtxR, disp_to_depth_mtx, valid_ROIL, valid_ROIR = cv2.stereoRectify(
+            cam_mtxL, distL, cam_mtxR, distR, (w, h), rot_mtx, trasl_mtx
+        )
         # Compute the undistorted and rectify mapping
         mapxL, mapyL = cv2.initUndistortRectifyMap(cam_mtxL, distL, rot_mtxL, proj_mtxL, (w, h), cv2.CV_32FC1)
         mapxR, mapyR = cv2.initUndistortRectifyMap(cam_mtxR, distR, rot_mtxR, proj_mtxR, (w, h), cv2.CV_32FC1)
@@ -535,7 +531,7 @@ class StereoCamera:
                                              roi2=tuple(self.calib_params['valid_ROIR']),
                                              minDisparity=self.disp_params['MDS'],
                                              numberOfDisparities=self.disp_params['NOD'],
-                                             SADWindowSize=self.disp_params['SWS'])
+                                             blockSize=self.disp_params['SWS'])
 
         # Create MOG2 background subtractors for both frames
         backSubL = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16)

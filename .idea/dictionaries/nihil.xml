@@ -4,6 +4,8 @@
       <w>dtype</w>
       <w>homography</w>
       <w>picam</w>
+      <w>savez</w>
+      <w>subtractors</w>
     </words>
   </dictionary>
 </component>
