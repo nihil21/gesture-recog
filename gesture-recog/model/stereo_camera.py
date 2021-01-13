@@ -450,7 +450,6 @@ class StereoCamera:
                 speckleRange=SR,
                 preFilterCap=PFC
             )
-            # noinspection PyUnresolvedReferences
             stereo_matcherR = cv2.ximgproc.createRightMatcher(stereo_matcherL)
 
             # Filter parameters
@@ -514,14 +513,12 @@ class StereoCamera:
             speckleRange=self.disp_params['SR'],
             preFilterCap=self.disp_params['PFC']
         )
-        # noinspection PyUnresolvedReferences
         stereo_matcherR = cv2.ximgproc.createRightMatcher(stereo_matcherL)
 
         # Filter parameters
         LAMBDA = 80000
         SIGMA = 1.2
         # Create filter
-        # noinspection PyUnresolvedReferences
         wls_filter = cv2.ximgproc.createDisparityWLSFilter(matcher_left=stereo_matcherL)
         wls_filter.setLambda(LAMBDA)
         wls_filter.setSigmaColor(SIGMA)
@@ -562,15 +559,15 @@ class StereoCamera:
             hand_maskL = backSubL.apply(dstL, learningRate=0.5)
             hand_maskR = backSubR.apply(dstR, learningRate=0.5)
 
-            """
+            '''
             # Threshold function
             def distance_threshold_fn(p):
                 depth = compute_depth(disp_point=p,
-                                      baseline=abs(trasl_mtx[0][0]),
-                                      alpha_uL=cam_mtxL[0][0],
-                                      alpha_uR=cam_mtxR[0][0],
-                                      u_0L=cam_mtxL[0][2],
-                                      u_0R=cam_mtxR[0][2])
+                                      baseline=abs(self.calib_params['trasl_mtx'][0][0]),
+                                      alpha_uL=self.calib_params['cam_mtxL'][0][0],
+                                      alpha_uR=self.calib_params['cam_mtxR'][0][0],
+                                      u_0L=self.calib_params['cam_mtxL'][0][2],
+                                      u_0R=self.calib_params['cam_mtxR'][0][2])
                 if thresh[0] <= depth <= thresh[1]:
                     return 255
                 else:
@@ -581,7 +578,7 @@ class StereoCamera:
     
             # Segment disparity
             hand_mask = distance_threshold_ufn(disp_gray).astype(np.uint8)
-            """
+            '''
 
             # Apply masks to frames
             handL = cv2.bitwise_and(dstL.astype(np.uint8), dstL.astype(np.uint8), mask=hand_maskL)

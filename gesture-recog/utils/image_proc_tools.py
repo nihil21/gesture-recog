@@ -53,7 +53,6 @@ def process_image_thread(img_name: str,
     return corners.reshape(-1, 2), img_drawn_corners
 
 
-# noinspection PyUnresolvedReferences
 def compute_disparity(frameL: np.ndarray,
                       frameR: np.ndarray,
                       mapxL: np.ndarray,
