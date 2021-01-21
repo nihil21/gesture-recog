@@ -2,10 +2,11 @@ import os
 import glob
 from datetime import datetime
 import matplotlib.pyplot as plt
+import psutil
 from model.errors import *
 from model.network_agent import ImageReceiver
 from utils.image_proc_tools import *
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from typing import Dict, Union, Tuple
 
 
@@ -94,7 +95,7 @@ class StereoCamera:
 
     def load_disp_params(self, disp_file: str):
         # Load disparity parameters from file
-        disp_params = np.load(disp_file + '.npz')
+        disp_params = {k: int(v) for k, v in np.load(disp_file + '.npz').items() if k != 'file'}
         # Set object's disparity parameters
         self.set_disp_params(disp_params)
 
@@ -229,11 +230,13 @@ class StereoCamera:
         # If one list has more elements than the other, the extra elements will be automatically discarded by 'zip'
         img_name_pairs = list(zip(img_namesL, img_namesR))
 
-        # Process concurrently stereo images
+        # Get number of available cores
+        n_procs = psutil.cpu_count(logical=False)
+        # Process in parallel stereo images
         stereo_img_names = []
         stereo_img_points_list = []
         stereo_img_drawn_corners_list = []
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        with ProcessPoolExecutor(max_workers=n_procs) as executor:
             futures = [executor.submit(process_stereo_image,
                                        img_name_pair,
                                        pattern_size)
@@ -270,7 +273,7 @@ class StereoCamera:
 
         # Calibrate concurrently single cameras and get the camera intrinsic parameters
         print('Calibrating left and right sensors...')
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        with ProcessPoolExecutor(max_workers=2) as executor:
             futureL = executor.submit(cv2.calibrateCamera, obj_points, img_pointsL, (w, h), None, None)
             futureR = executor.submit(cv2.calibrateCamera, obj_points, img_pointsR, (w, h), None, None)
             rmsL, cam_mtxL, distL, _, _ = futureL.result()
@@ -369,26 +372,28 @@ class StereoCamera:
         # Save start time
         start_time = datetime.now()
 
-        frameL, frameR = None, None
-        while n_sec < tot_sec:
+        while True:
             # Get frames from both cameras
             frameL, frameR = self.recv_stereo_frames()
 
-            # Draw on screen the current remaining seconds
-            cv2.putText(img=frameL,
-                        text=str_sec[n_sec],
-                        org=(int(10), int(40)),
-                        fontFace=cv2.FONT_HERSHEY_DUPLEX,
-                        fontScale=1,
-                        color=(255, 255, 255),
-                        thickness=3,
-                        lineType=cv2.LINE_AA)
+            if n_sec < tot_sec:
+                # Draw on screen the current remaining seconds
+                cv2.putText(img=frameL,
+                            text=str_sec[n_sec],
+                            org=(int(10), int(40)),
+                            fontFace=cv2.FONT_HERSHEY_DUPLEX,
+                            fontScale=1,
+                            color=(255, 255, 255),
+                            thickness=3,
+                            lineType=cv2.LINE_AA)
 
-            # If time elapsed is greater than one second, update 'n_sec'
-            time_elapsed = (datetime.now() - start_time).total_seconds()
-            if time_elapsed >= 1:
-                n_sec += 1
-                start_time = datetime.now()
+                # If time elapsed is greater than one second, update 'n_sec'
+                time_elapsed = (datetime.now() - start_time).total_seconds()
+                if time_elapsed >= 1:
+                    n_sec += 1
+                    start_time = datetime.now()
+            else:
+                break
 
             # Display side by side the frames
             frames = np.hstack((frameL, frameR))
@@ -408,18 +413,22 @@ class StereoCamera:
         NOD_label = 'Number of Disparities'
         SWS_label = 'SAD window size'
         PFC_label = 'PreFilter Cap'
+        D12MD_label = 'Disp12MaxDiff'
+        UR_label = 'Uniqueness Ratio'
+        SPWS_label = 'Speckle Window Size'
+        SR_label = 'Speckle Range'
+        M_label = 'Mode'
         cv2.namedWindow(window_label)
         cv2.createTrackbar(MDS_label, window_label, 0, 40, lambda *args: None)
         cv2.createTrackbar(MDS_label_neg, window_label, 0, 40, lambda *args: None)
-        cv2.createTrackbar(NOD_label, window_label, 0, 144, lambda *args: None)
+        cv2.createTrackbar(NOD_label, window_label, 0, 256, lambda *args: None)
         cv2.createTrackbar(SWS_label, window_label, 1, 15, lambda *args: None)
-        cv2.createTrackbar(PFC_label, window_label, 0, 63, lambda *args: None)
-
-        # Parameters not tuned
-        D12MD = 1
-        UR = 10
-        SPWS = 7
-        SR = 2
+        cv2.createTrackbar(PFC_label, window_label, 0, 100, lambda *args: None)
+        cv2.createTrackbar(D12MD_label, window_label, 0, 300, lambda *args: None)
+        cv2.createTrackbar(UR_label, window_label, 0, 20, lambda *args: None)
+        cv2.createTrackbar(SPWS_label, window_label, 0, 300, lambda *args: None)
+        cv2.createTrackbar(SR_label, window_label, 0, 5, lambda *args: None)
+        cv2.createTrackbar(M_label, window_label, 0, 1, lambda *args: None)
 
         while True:
             # Retrieve values set by trackers
@@ -433,9 +442,14 @@ class StereoCamera:
             # Convert SWS to next odd number
             SWS = cv2.getTrackbarPos(SWS_label, window_label)
             SWS = SWS - (SWS % 2) + 2
-            P1 = 8 * SWS ** 2
-            P2 = 32 * SWS ** 2
+            P1 = 8 * 3 * SWS ** 2
+            P2 = 32 * 3 * SWS ** 2
+            D12MD = cv2.getTrackbarPos(D12MD_label, window_label)
+            UR = cv2.getTrackbarPos(UR_label, window_label)
+            SPWS = cv2.getTrackbarPos(SPWS_label, window_label)
+            SR = cv2.getTrackbarPos(SR_label, window_label)
             PFC = cv2.getTrackbarPos(PFC_label, window_label)
+            M = cv2.getTrackbarPos(M_label, window_label)
 
             # Create and configure left and right stereo matchers
             stereo_matcherL = cv2.StereoSGBM_create(
@@ -448,18 +462,9 @@ class StereoCamera:
                 uniquenessRatio=UR,
                 speckleWindowSize=SPWS,
                 speckleRange=SR,
-                preFilterCap=PFC
+                preFilterCap=PFC,
+                mode=M
             )
-            stereo_matcherR = cv2.ximgproc.createRightMatcher(stereo_matcherL)
-
-            # Filter parameters
-            LAMBDA = 80000
-            SIGMA = 1.2
-            # Create filter
-            # noinspection PyUnresolvedReferences
-            wls_filter = cv2.ximgproc.createDisparityWLSFilter(matcher_left=stereo_matcherL)
-            wls_filter.setLambda(LAMBDA)
-            wls_filter.setSigmaColor(SIGMA)
 
             # Compute disparity map
             disp, disp_gray, dstL, dstR = compute_disparity(frameL, frameR,
@@ -467,22 +472,25 @@ class StereoCamera:
                                                             self.calib_params['mapxR'],
                                                             self.calib_params['mapyL'],
                                                             self.calib_params['mapyR'],
-                                                            stereo_matcherL, stereo_matcherR, wls_filter)
+                                                            stereo_matcherL)
 
             # Stack resized frames and disparity map and display them
-            disp_tune = np.hstack((dstL, disp))
+            disp_tune = np.hstack((cv2.cvtColor(dstL, cv2.COLOR_BGR2GRAY), disp_gray))
             cv2.imshow(window_label, disp_tune)
 
             # If 'q' is pressed, exit and return parameters
             if cv2.waitKey(1) & 0xFF == ord('q'):
-                disp_params = dict(MDS=MDS,
-                                   NOD=NOD,
-                                   SWS=SWS,
-                                   D12MD=D12MD,
-                                   UR=UR,
-                                   SPWS=SPWS,
-                                   SR=SR,
-                                   PFC=PFC)
+                cv2.imwrite('../disp-samples/rect_dstL.jpg', dstL)
+                cv2.imwrite('../disp-samples/rect_dstR.jpg', dstR)
+                disp_params = {'MDS': MDS,
+                               'NOD': NOD,
+                               'SWS': SWS,
+                               'D12MD': D12MD,
+                               'UR': UR,
+                               'SPWS': SPWS,
+                               'SR': SR,
+                               'PFC': PFC,
+                               'M': M}
                 break
         cv2.destroyAllWindows()
         self.set_disp_params(disp_params)
@@ -497,9 +505,8 @@ class StereoCamera:
             raise MissingParametersError('Calibration')
         if not self.has_disparity_params:
             raise MissingParametersError('Disparity')
-        P1 = 8 * self.disp_params['SWS'] ** 2
-        P2 = 32 * self.disp_params['SWS'] ** 2
-
+        P1 = 8 * 3 * self.disp_params['SWS'] ** 2
+        P2 = 32 * 3 * self.disp_params['SWS'] ** 2
         # Create and configure left and right stereo matchers
         stereo_matcherL = cv2.StereoSGBM_create(
             minDisparity=self.disp_params['MDS'],
@@ -511,17 +518,9 @@ class StereoCamera:
             uniquenessRatio=self.disp_params['UR'],
             speckleWindowSize=self.disp_params['SPWS'],
             speckleRange=self.disp_params['SR'],
-            preFilterCap=self.disp_params['PFC']
+            preFilterCap=self.disp_params['PFC'],
+            mode=self.disp_params['M']
         )
-        stereo_matcherR = cv2.ximgproc.createRightMatcher(stereo_matcherL)
-
-        # Filter parameters
-        LAMBDA = 80000
-        SIGMA = 1.2
-        # Create filter
-        wls_filter = cv2.ximgproc.createDisparityWLSFilter(matcher_left=stereo_matcherL)
-        wls_filter.setLambda(LAMBDA)
-        wls_filter.setSigmaColor(SIGMA)
 
         # Compute valid ROI
         valid_ROI = cv2.getValidDisparityROI(roi1=tuple(self.calib_params['valid_ROIL']),
@@ -531,8 +530,8 @@ class StereoCamera:
                                              blockSize=self.disp_params['SWS'])
 
         # Create MOG2 background subtractors for both frames
-        backSubL = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16)
-        backSubR = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16)
+        # backSubL = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16)
+        # backSubR = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16)
 
         # Wait for ready signal from sensors
         res = self.multicast_recv()
@@ -553,14 +552,15 @@ class StereoCamera:
                                                             self.calib_params['mapxR'],
                                                             self.calib_params['mapyL'],
                                                             self.calib_params['mapyR'],
-                                                            stereo_matcherL, stereo_matcherR, wls_filter, valid_ROI)
+                                                            stereo_matcherL, valid_ROI)
 
             # Compute foreground mask based on both frames and update background
-            hand_maskL = backSubL.apply(dstL, learningRate=0.5)
-            hand_maskR = backSubR.apply(dstR, learningRate=0.5)
+            # hand_maskL = backSubL.apply(dstL, learningRate=0.5)
+            # hand_maskR = backSubR.apply(dstR, learningRate=0.5)
 
-            '''
             # Threshold function
+            thresh = [100, 150]
+
             def distance_threshold_fn(p):
                 depth = compute_depth(disp_point=p,
                                       baseline=abs(self.calib_params['trasl_mtx'][0][0]),
@@ -577,9 +577,10 @@ class StereoCamera:
             distance_threshold_ufn = np.frompyfunc(distance_threshold_fn, 1, 1)
     
             # Segment disparity
-            hand_mask = distance_threshold_ufn(disp_gray).astype(np.uint8)
-            '''
+            # hand_mask = distance_threshold_ufn(disp_gray).astype(np.uint8)
+            # hand = cv2.bitwise_and(dstL.astype(np.uint8), dstL.astype(np.uint8), mask=hand_mask)
 
+            '''
             # Apply masks to frames
             handL = cv2.bitwise_and(dstL.astype(np.uint8), dstL.astype(np.uint8), mask=hand_maskL)
             handR = cv2.bitwise_and(dstR.astype(np.uint8), dstR.astype(np.uint8), mask=hand_maskR)
@@ -591,19 +592,21 @@ class StereoCamera:
             contoursR, _ = cv2.findContours(cv2.cvtColor(handR, cv2.COLOR_BGR2GRAY),
                                             cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
             cv2.drawContours(handR, contoursR, -1, color=(0, 255, 0), thickness=cv2.FILLED)
+            '''
 
             # Display frames and disparity maps
             frames = np.hstack((dstL, dstR))
-            hand = np.hstack((handL, handR))
+            # hand = np.hstack((handL, handR))
             cv2.imshow('Left and right frame', frames)
             cv2.imshow('Disparity', disp)
-            cv2.imshow("Hand", hand)
+            # cv2.imshow("Hand", hand)
 
             # When 'q' is pressed, save current frames and disparity maps to file and break the loop
             if cv2.waitKey(1) & 0xFF == ord('q'):
+                print(dstL.shape)
                 cv2.imwrite('../disp-samples/Stereo_image.jpg', frames)
                 cv2.imwrite('../disp-samples/Disparity.jpg', disp)
-                cv2.imwrite('../disp-samples/Hand.jpg', hand)
+                # cv2.imwrite('../disp-samples/Hand.jpg', hand)
                 self.multicast_send('term')
                 break
 

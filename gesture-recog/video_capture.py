@@ -9,7 +9,7 @@ L_PORT: int = 8000
 R_PORT: int = 8001
 
 # Camera size
-RES: Tuple[int, int] = (304, 304)
+RES: Tuple[int, int] = (640, 480)
 
 
 def main():

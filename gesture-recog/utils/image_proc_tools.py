@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 from model.errors import ChessboardNotFoundError
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from typing import Tuple, Optional
 
 
@@ -60,8 +60,6 @@ def compute_disparity(frameL: np.ndarray,
                       mapyL: np.ndarray,
                       mapyR: np.ndarray,
                       stereo_matcherL: cv2.StereoSGBM,
-                      stereo_matcherR: cv2.StereoMatcher,
-                      wls_filter: cv2.ximgproc_DisparityWLSFilter,
                       valid_ROI: Optional[Tuple[int, int, int, int]] = None) -> (np.ndarray,
                                                                                  np.ndarray,
                                                                                  np.ndarray,
@@ -75,8 +73,6 @@ def compute_disparity(frameL: np.ndarray,
         :param mapyL: NumPy array representing the homography to undistort and rectify the left image along y-axis
         :param mapyR: NumPy array representing the homography to undistort and rectify the right image along y-axis
         :param stereo_matcherL: SemiGlobal Block Matching stereo matcher based on the left image
-        :param stereo_matcherR: stereo matcher based on the right image, useful to filter the disparity map
-        :param wls_filter: Weighted Least Squares filter, useful to improve the quality of the disparity map
         :param valid_ROI: tuple of four integers representing the Region Of Interest
                           common to both left and right images (optional)
 
@@ -94,23 +90,23 @@ def compute_disparity(frameL: np.ndarray,
         dstL = dstL[y:y + h, x:x + w]
         dstR = dstR[y:y + h, x:x + w]
 
+    # Downsize
+    dstL = cv2.pyrDown(dstL)
+    dstR = cv2.pyrDown(dstR)
+
     # Compute disparities concurrently using the grayscale version with enhanced contrast
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futureL = executor.submit(stereo_matcherL.compute, dstL, dstR)
-        futureR = executor.submit(stereo_matcherR.compute, dstR, dstL)
-        futures = {futureL, futureR}
-        for future in as_completed(futures):
-            if future == futureL:
-                dispL = future.result()
-            else:
-                dispR = future.result()
-    filtered_disp = wls_filter.filter(dispL, dstL, None, dispR)
-    disp_gray = cv2.normalize(src=filtered_disp,
+    dispL = stereo_matcherL.compute(dstL, dstR)
+    disp_gray = cv2.normalize(src=dispL,
                               dst=None,
                               alpha=0,
                               beta=255,
                               norm_type=cv2.NORM_MINMAX,
                               dtype=cv2.CV_8U)
+    # Apply bilateral filter
+    disp_gray = cv2.bilateralFilter(disp_gray, d=5, sigmaColor=150, sigmaSpace=150)
+    # Denoise
+    kernel = np.ones((5, 5), np.uint8)
+    disp_gray = cv2.morphologyEx(disp_gray, cv2.MORPH_CLOSE, kernel)
     # Apply colormap to disparity
     disp = cv2.applyColorMap(disp_gray, cv2.COLORMAP_JET)
     return disp, disp_gray, dstL, dstR

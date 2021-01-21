@@ -117,10 +117,7 @@ class ImageSender(NetworkAgent):
 
     def recv_frame(self):
         # Disable 'recv_frame' method
-        pass
-
-    def stream(self):
-        """Placeholder method, will be set to either 'stream_from_picamera' or 'stream_from_webcam'"""
+        raise NotImplementedError("The recv_frame method of ImageSender class is disabled")
 
     def stream_from_picamera(self):
         """Function that implements the streaming of images captured by the PiCamera over a TCP socket"""
@@ -129,7 +126,7 @@ class ImageSender(NetworkAgent):
         # Initialize camera
         camera = PiCamera()
         camera.resolution = self.res
-        camera.framerate = 20
+        camera.framerate = 10
         raw_capture = PiRGBArray(camera, size=self.res)
 
         # Camera warm-up
@@ -222,7 +219,7 @@ class ImageReceiver(NetworkAgent):
 
     def send_frame(self, array: np.ndarray):
         # Disable 'send_frame' method
-        pass
+        raise NotImplementedError("The send_frame method of ImageReceiver class is disabled")
 
     def flush_pending_frames(self):
         """Method that flushes the pending frames on the TCP socket"""
