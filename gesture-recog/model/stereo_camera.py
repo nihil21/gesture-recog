@@ -529,9 +529,9 @@ class StereoCamera:
                                              numberOfDisparities=self.disp_params['NOD'],
                                              blockSize=self.disp_params['SWS'])
 
-        # Create MOG2 background subtractors for both frames
-        # backSubL = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16)
-        # backSubR = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16)
+        # Define skin color bounds in YCbCr color space
+        skin_lower = np.array([0, 133, 77], dtype=np.uint8)
+        skin_upper = np.array([255, 173, 127], dtype=np.uint8)
 
         # Wait for ready signal from sensors
         res = self.multicast_recv()
@@ -554,56 +554,29 @@ class StereoCamera:
                                                             self.calib_params['mapyR'],
                                                             stereo_matcherL, valid_ROI)
 
-            # Compute foreground mask based on both frames and update background
-            # hand_maskL = backSubL.apply(dstL, learningRate=0.5)
-            # hand_maskR = backSubR.apply(dstR, learningRate=0.5)
-
-            # Threshold function
-            thresh = [100, 150]
-
-            def distance_threshold_fn(p):
-                depth = compute_depth(disp_point=p,
-                                      baseline=abs(self.calib_params['trasl_mtx'][0][0]),
-                                      alpha_uL=self.calib_params['cam_mtxL'][0][0],
-                                      alpha_uR=self.calib_params['cam_mtxR'][0][0],
-                                      u_0L=self.calib_params['cam_mtxL'][0][2],
-                                      u_0R=self.calib_params['cam_mtxR'][0][2])
-                if thresh[0] <= depth <= thresh[1]:
-                    return 255
-                else:
-                    return 0
-    
-            # Converting distance_threshold_fn to Python's ufunc in order to improve performance
-            distance_threshold_ufn = np.frompyfunc(distance_threshold_fn, 1, 1)
-    
-            # Segment disparity
-            # hand_mask = distance_threshold_ufn(disp_gray).astype(np.uint8)
-            # hand = cv2.bitwise_and(dstL.astype(np.uint8), dstL.astype(np.uint8), mask=hand_mask)
-
-            '''
-            # Apply masks to frames
-            handL = cv2.bitwise_and(dstL.astype(np.uint8), dstL.astype(np.uint8), mask=hand_maskL)
-            handR = cv2.bitwise_and(dstR.astype(np.uint8), dstR.astype(np.uint8), mask=hand_maskR)
-
-            # Determine contours of hands
-            contoursL, _ = cv2.findContours(cv2.cvtColor(handL, cv2.COLOR_BGR2GRAY),
-                                            cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-            cv2.drawContours(handL, contoursL, -1, color=(0, 255, 0), thickness=cv2.FILLED)
-            contoursR, _ = cv2.findContours(cv2.cvtColor(handR, cv2.COLOR_BGR2GRAY),
-                                            cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-            cv2.drawContours(handR, contoursR, -1, color=(0, 255, 0), thickness=cv2.FILLED)
-            '''
+            # Segment hand
+            # Step 1: threshold disparity map
+            _, disp_mask = cv2.threshold(disp_gray, 127, 255, cv2.THRESH_BINARY)
+            # Step 2: convert frame to YCbCr color space and segment pixels in the given range
+            converted = cv2.cvtColor(dstL, cv2.COLOR_BGR2YCrCb)
+            skin_mask = cv2.inRange(converted, skin_lower, skin_upper)
+            # Step 3: apply both masks on the frame
+            mask = np.bitwise_and(skin_mask, disp_mask)
+            hand = cv2.bitwise_and(dstL.astype(np.uint8), dstL.astype(np.uint8), mask=mask)
+            hand_disp = cv2.bitwise_and(disp_gray, disp_gray, mask=mask)
+            # Step 4: apply close operator to refine the segmented image
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+            hand = cv2.morphologyEx(hand, cv2.MORPH_CLOSE, kernel)
+            hand_disp = cv2.morphologyEx(hand_disp, cv2.MORPH_CLOSE, kernel)
 
             # Display frames and disparity maps
             frames = np.hstack((dstL, dstR))
-            # hand = np.hstack((handL, handR))
             cv2.imshow('Left and right frame', frames)
             cv2.imshow('Disparity', disp)
-            # cv2.imshow("Hand", hand)
+            cv2.imshow("Hand", np.hstack((hand, np.repeat(np.expand_dims(hand_disp, axis=-1), 3, axis=-1))))
 
             # When 'q' is pressed, save current frames and disparity maps to file and break the loop
             if cv2.waitKey(1) & 0xFF == ord('q'):
-                print(dstL.shape)
                 cv2.imwrite('../disp-samples/Stereo_image.jpg', frames)
                 cv2.imwrite('../disp-samples/Disparity.jpg', disp)
                 # cv2.imwrite('../disp-samples/Hand.jpg', hand)
