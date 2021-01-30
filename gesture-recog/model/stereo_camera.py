@@ -44,12 +44,16 @@ class StereoCamera:
     def __init__(self,
                  hostL: Dict[str, Union[str, int]],
                  hostR: Dict[str, Union[str, int]]):
+        # Instantiate sensors with address and port
         self.left_sensor = ImageReceiver(hostL['ip_addr'], hostL['port'])
         self.right_sensor = ImageReceiver(hostR['ip_addr'], hostR['port'])
+        # Calibration and disparity parameters
         self.calib_params = dict()
-        self.is_calibrated = False
         self.disp_params = dict()
+        self.is_calibrated = False
         self.has_disparity_params = False
+        # Keep track of min and max disparities
+        self.disp_bounds = [np.inf, -np.inf]
 
     def multicast_send(self, msg: str):
         """Method which enables the concurrent communication with both ImageSender objects
@@ -139,8 +143,8 @@ class StereoCamera:
 
         # Wait for ready signal from sensors
         res = self.multicast_recv()
-        print('Left sensor: {0:s}'.format(res['L']))
-        print('Right sensor: {0:s}'.format(res['R']))
+        print(f"Left sensor: {res['L']}")
+        print(f"Right sensor: {res['R']}")
         print('Both sensors are ready')
 
         # Synchronize sensors with a start signal
@@ -151,11 +155,14 @@ class StereoCamera:
         while n_pics < tot_pics:
             # Get frames from both cameras
             frameL, frameR = self.recv_stereo_frames()
+            # Flip frames horizontally to make it more comfortable for humans
+            flipped_frameL = cv2.flip(frameL, 1)
+            flipped_frameR = cv2.flip(frameR, 1)
 
             # Display counter on screen before saving frame
             if n_sec < tot_sec:
                 # Draw on screen the current remaining seconds
-                cv2.putText(img=frameL,
+                cv2.putText(img=flipped_frameL,
                             text=str_sec[n_sec],
                             org=(int(10), int(40)),
                             fontFace=cv2.FONT_HERSHEY_DUPLEX,
@@ -164,8 +171,8 @@ class StereoCamera:
                             thickness=3,
                             lineType=cv2.LINE_AA)
                 # Draw on screen the current remaining pictures
-                cv2.putText(img=frameR,
-                            text='{:d}/{:d}'.format(n_pics, tot_pics),
+                cv2.putText(img=flipped_frameR,
+                            text=f'{n_pics}/{tot_pics}',
                             org=(int(10), int(40)),
                             fontFace=cv2.FONT_HERSHEY_DUPLEX,
                             fontScale=1,
@@ -179,19 +186,19 @@ class StereoCamera:
                     n_sec += 1
                     start_time = datetime.now()
             else:
-                # When countdown ends, save grayscale image to file
+                # When countdown ends, save original grayscale image to file
                 gray_frameL = cv2.cvtColor(frameL, cv2.COLOR_BGR2GRAY)
                 gray_frameR = cv2.cvtColor(frameR, cv2.COLOR_BGR2GRAY)
-                cv2.imwrite(os.path.join(pathL, '{0:02d}'.format(n_pics) + '.jpg'), gray_frameL)
-                cv2.imwrite(os.path.join(pathR, '{0:02d}'.format(n_pics) + '.jpg'), gray_frameR)
+                cv2.imwrite(os.path.join(pathL, f'{n_pics:02d}' + '.jpg'), gray_frameL)
+                cv2.imwrite(os.path.join(pathR, f'{n_pics:02d}' + '.jpg'), gray_frameR)
                 # Update counters
                 n_pics += 1
                 n_sec = 0
 
-                print('{0:d}/{1:d} images collected'.format(n_pics, tot_pics))
+                print(f'{n_pics}/{tot_pics} images collected')
 
-            # Display side by side the frames
-            frames = np.hstack((frameL, frameR))
+            # Display side by side the flipped frames
+            frames = np.hstack((flipped_frameR, flipped_frameL))
             cv2.imshow('Left and right frames', frames)
 
             # If 'q' is pressed, or enough images are collected,
@@ -249,7 +256,7 @@ class StereoCamera:
                     stereo_img_points_list.append(stereo_img_points)
                     stereo_img_drawn_corners_list.append(stereo_img_drawn_corners)
                 except ChessboardNotFoundError as e:
-                    print('No chessboard found in image {0:s}'.format(e.file))
+                    print(f'No chessboard found in image {e.file}')
 
         # If no chessboard was detected, raise exception
         if len(stereo_img_points_list) == 0:
@@ -279,8 +286,8 @@ class StereoCamera:
             rmsL, cam_mtxL, distL, _, _ = futureL.result()
             rmsR, cam_mtxR, distR, _, _ = futureR.result()
 
-        print('Left sensor calibrated, RMS = {0:.5f}'.format(rmsL))
-        print('Right sensor calibrated, RMS = {0:.5f}'.format(rmsR))
+        print(f'Left sensor calibrated, RMS = {rmsL:.5f}')
+        print(f'Right sensor calibrated, RMS = {rmsR:.5f}')
 
         # Use intrinsic parameters to calibrate more reliably the stereo camera
         print('Calibrating stereo camera...')
@@ -294,7 +301,7 @@ class StereoCamera:
                                                                                                         distR,
                                                                                                         (w, h),
                                                                                                         flags=flag)
-        print('Stereo camera calibrated, error: {0:.5f}'.format(error))
+        print(f'Stereo camera calibrated, error: {error:.5f}')
         rot_mtxL, rot_mtxR, proj_mtxL, proj_mtxR, disp_to_depth_mtx, valid_ROIL, valid_ROIR = cv2.stereoRectify(
             cam_mtxL, distL, cam_mtxR, distR, (w, h), rot_mtx, trasl_mtx
         )
@@ -347,19 +354,29 @@ class StereoCamera:
 
             plt.show()
 
+    def undistort_rectify(self, frameL: np.ndarray, frameR: np.ndarray) -> (np.ndarray, np.ndarray):
+        # Check calibration data
+        if not self.is_calibrated:
+            raise MissingParametersError('Calibration')
+        # Undistort and rectify using calibration data
+        dstL = cv2.remap(frameL, self.calib_params['mapxL'], self.calib_params['mapyL'], cv2.INTER_LINEAR)
+        dstR = cv2.remap(frameR, self.calib_params['mapxR'], self.calib_params['mapyR'], cv2.INTER_LINEAR)
+
+        return dstL, dstR
+
     def disp_map_tuning(self, disp_file: str):
         """Allows to tune the disparity map
             :param disp_file: path to the file where disparity parameters will be saved"""
         print('Disparity map tuning...')
 
-        # Load calibration data
+        # Check calibration data
         if not self.is_calibrated:
             raise MissingParametersError('Calibration')
 
         # Wait for ready signal from sensors
         res = self.multicast_recv()
-        print('Left sensor: {0:s}'.format(res['L']))
-        print('Right sensor: {0:s}'.format(res['R']))
+        print(f"Left sensor: {res['L']}")
+        print(f"Right sensor: {res['R']}")
         print('Both sensors are ready')
 
         # Initialize variables for countdown
@@ -373,12 +390,16 @@ class StereoCamera:
         start_time = datetime.now()
 
         while True:
-            # Get frames from both cameras
+            # Get frames from both cameras and apply camera corrections
             frameL, frameR = self.recv_stereo_frames()
+            dstL, dstR = self.undistort_rectify(frameL, frameR)
+            # Flip frames horizontally to make it more comfortable for humans
+            flipped_dstL = cv2.flip(dstL, 1)
+            flipped_dstR = cv2.flip(dstR, 1)
 
             if n_sec < tot_sec:
                 # Draw on screen the current remaining seconds
-                cv2.putText(img=frameL,
+                cv2.putText(img=flipped_dstL,
                             text=str_sec[n_sec],
                             org=(int(10), int(40)),
                             fontFace=cv2.FONT_HERSHEY_DUPLEX,
@@ -396,7 +417,7 @@ class StereoCamera:
                 break
 
             # Display side by side the frames
-            frames = np.hstack((frameL, frameR))
+            frames = np.hstack((flipped_dstR, flipped_dstL))
             cv2.imshow('Left and right frames', frames)
             cv2.waitKey(1)
         cv2.destroyAllWindows()
@@ -405,6 +426,10 @@ class StereoCamera:
         self.multicast_send('term')
         self.flush_pending_stereo_frames()
         print('Pending frames flushed')
+
+        # Downsize
+        dstL = cv2.resize(dstL, (480, 360))
+        dstR = cv2.resize(dstR, (480, 360))
 
         # Create named window and sliders for tuning
         window_label = 'Disparity tuning'
@@ -452,7 +477,7 @@ class StereoCamera:
             M = cv2.getTrackbarPos(M_label, window_label)
 
             # Create and configure left and right stereo matchers
-            stereo_matcherL = cv2.StereoSGBM_create(
+            stereo_matcher = cv2.StereoSGBM_create(
                 minDisparity=MDS,
                 numDisparities=NOD,
                 blockSize=SWS,
@@ -467,15 +492,12 @@ class StereoCamera:
             )
 
             # Compute disparity map
-            disp, disp_gray, dstL, dstR = compute_disparity(frameL, frameR,
-                                                            self.calib_params['mapxL'],
-                                                            self.calib_params['mapxR'],
-                                                            self.calib_params['mapyL'],
-                                                            self.calib_params['mapyR'],
-                                                            stereo_matcherL)
+            disp = compute_disparity(dstL, dstR, stereo_matcher)
+            # Apply colormap to disparity
+            disp_color = cv2.applyColorMap(disp, cv2.COLORMAP_PLASMA)
 
             # Stack resized frames and disparity map and display them
-            disp_tune = np.hstack((cv2.cvtColor(dstL, cv2.COLOR_BGR2GRAY), disp_gray))
+            disp_tune = np.hstack((dstL, disp_color))
             cv2.imshow(window_label, disp_tune)
 
             # If 'q' is pressed, exit and return parameters
@@ -508,7 +530,7 @@ class StereoCamera:
         P1 = 8 * 3 * self.disp_params['SWS'] ** 2
         P2 = 32 * 3 * self.disp_params['SWS'] ** 2
         # Create and configure left and right stereo matchers
-        stereo_matcherL = cv2.StereoSGBM_create(
+        stereo_matcher = cv2.StereoSGBM_create(
             minDisparity=self.disp_params['MDS'],
             numDisparities=self.disp_params['NOD'],
             blockSize=self.disp_params['SWS'],
@@ -535,36 +557,55 @@ class StereoCamera:
 
         # Wait for ready signal from sensors
         res = self.multicast_recv()
-        print('Left sensor: {0:s}'.format(res['L']))
-        print('Right sensor: {0:s}'.format(res['R']))
+        print(f"Left sensor: {res['L']}")
+        print(f"Right sensor: {res['R']}")
         print('Both sensors are ready')
 
         # Synchronize sensors with a start signal
         self.multicast_send('start')
 
+        disp_hist = []
         while True:
-            # Get frames from both cameras
+            # Get frames from both cameras and apply camera corrections
             frameL, frameR = self.recv_stereo_frames()
+            dstL, dstR = self.undistort_rectify(frameL, frameR)
+
+            # Crop frames to valid ROI
+            x, y, w, h = valid_ROI
+            dstL = dstL[y:y + h, x:x + w]
+            dstR = dstR[y:y + h, x:x + w]
+
+            # Downsize
+            dstL = cv2.resize(dstL, (480, 360))
+            dstR = cv2.resize(dstR, (480, 360))
 
             # Compute disparity map
-            disp, disp_gray, dstL, dstR = compute_disparity(frameL, frameR,
-                                                            self.calib_params['mapxL'],
-                                                            self.calib_params['mapxR'],
-                                                            self.calib_params['mapyL'],
-                                                            self.calib_params['mapyR'],
-                                                            stereo_matcherL, valid_ROI)
+            disp = compute_disparity(dstL, dstR, stereo_matcher, self.disp_bounds)
+            # Denoise disparity map by averaging along temporal dimension
+            # if len(disp_hist) == 2:
+            #    disp = cv2.fastNlMeansDenoisingMulti([disp_hist[0], disp, disp_hist[1]], imgToDenoiseIndex=1,
+            #                                          temporalWindowSize=3, templateWindowSize=1)
+            #    disp_hist.pop(0)
+            # disp_hist.append(disp)
+
+            # Apply colormap to disparity
+            disp_color = cv2.applyColorMap(disp, cv2.COLORMAP_PLASMA)
 
             # Segment hand
             # Step 1: threshold disparity map
-            _, disp_mask = cv2.threshold(disp_gray, 127, 255, cv2.THRESH_BINARY)
+            _, disp_mask = cv2.threshold(disp, 185, 255, cv2.THRESH_BINARY)
             # Step 2: convert frame to YCbCr color space and segment pixels in the given range
             converted = cv2.cvtColor(dstL, cv2.COLOR_BGR2YCrCb)
             skin_mask = cv2.inRange(converted, skin_lower, skin_upper)
-            # Step 3: apply both masks on the frame
+            # Step 3: refine masks
+            # kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            # disp_mask = cv2.morphologyEx(disp_mask, cv2.MORPH_OPEN, kernel)
+            # skin_mask = cv2.morphologyEx(skin_mask, cv2.MORPH_OPEN, kernel)
+            # Step 4: apply both masks on the frame
             mask = np.bitwise_and(skin_mask, disp_mask)
             hand = cv2.bitwise_and(dstL.astype(np.uint8), dstL.astype(np.uint8), mask=mask)
-            hand_disp = cv2.bitwise_and(disp_gray, disp_gray, mask=mask)
-            # Step 4: apply close operator to refine the segmented image
+            hand_disp = cv2.bitwise_and(disp, disp, mask=mask)
+            # Step 5: apply close operator to refine the segmented image
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
             hand = cv2.morphologyEx(hand, cv2.MORPH_CLOSE, kernel)
             hand_disp = cv2.morphologyEx(hand_disp, cv2.MORPH_CLOSE, kernel)
@@ -572,7 +613,7 @@ class StereoCamera:
             # Display frames and disparity maps
             frames = np.hstack((dstL, dstR))
             cv2.imshow('Left and right frame', frames)
-            cv2.imshow('Disparity', disp)
+            cv2.imshow('Disparity', np.hstack((np.repeat(np.expand_dims(disp, axis=-1), 3, axis=-1), disp_color)))
             cv2.imshow("Hand", np.hstack((hand, np.repeat(np.expand_dims(hand_disp, axis=-1), 3, axis=-1))))
 
             # When 'q' is pressed, save current frames and disparity maps to file and break the loop

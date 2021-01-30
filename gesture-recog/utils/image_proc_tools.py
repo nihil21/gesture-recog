@@ -1,8 +1,8 @@
 import cv2
 import numpy as np
 from model.errors import ChessboardNotFoundError
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
-from typing import Tuple, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Tuple, Optional, List
 
 
 def process_stereo_image(img_name_pair: Tuple[str, str],
@@ -16,7 +16,7 @@ def process_stereo_image(img_name_pair: Tuple[str, str],
         of the right and left images
         :returns the tuple of stereo images of a chessboard with corners drawn"""
     stereo_img_name = img_name_pair[0].split('/')[-1:][0]
-    print('Processing image {0:s}...'.format(stereo_img_name))
+    print(f'Processing image {stereo_img_name}...')
 
     # Process concurrently both images
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -31,7 +31,7 @@ def process_stereo_image(img_name_pair: Tuple[str, str],
         stereo_img_points = (img_pointsL, img_pointsR)
         stereo_img_drawn_corners = (img_drawn_cornersL, img_drawn_cornersR)
 
-    print('Image {0:s} processed'.format(stereo_img_name))
+    print(f'Image {stereo_img_name} processed')
     return stereo_img_name, stereo_img_points, stereo_img_drawn_corners
 
 
@@ -53,63 +53,37 @@ def process_image_thread(img_name: str,
     return corners.reshape(-1, 2), img_drawn_corners
 
 
-def compute_disparity(frameL: np.ndarray,
-                      frameR: np.ndarray,
-                      mapxL: np.ndarray,
-                      mapxR: np.ndarray,
-                      mapyL: np.ndarray,
-                      mapyR: np.ndarray,
-                      stereo_matcherL: cv2.StereoSGBM,
-                      valid_ROI: Optional[Tuple[int, int, int, int]] = None) -> (np.ndarray,
-                                                                                 np.ndarray,
-                                                                                 np.ndarray,
-                                                                                 np.ndarray):
-    """This function computes the undistorted and rectified left and right frames of a stereo camera,
-    and the disparity maps, both in grayscale and colored
-        :param frameL: NumPy array representing the left image
-        :param frameR: NumPy array representing the right image
-        :param mapxL: NumPy array representing the homography to undistort and rectify the left image along x-axis
-        :param mapxR: NumPy array representing the homography to undistort and rectify the right image along x-axis
-        :param mapyL: NumPy array representing the homography to undistort and rectify the left image along y-axis
-        :param mapyR: NumPy array representing the homography to undistort and rectify the right image along y-axis
-        :param stereo_matcherL: SemiGlobal Block Matching stereo matcher based on the left image
-        :param valid_ROI: tuple of four integers representing the Region Of Interest
-                          common to both left and right images (optional)
+def compute_disparity(dstL: np.ndarray,
+                      dstR: np.ndarray,
+                      stereo_matcher: cv2.StereoSGBM,
+                      disp_bounds: Optional[List[float]] = None) -> np.ndarray:
+    """Given a pair of stereo images, already undistorted and rectified, this function computes the disparity map
+        :param dstL: NumPy array representing the left image (already undistorted and rectified)
+        :param dstR: NumPy array representing the right image (already undistorted and rectified)
+        :param stereo_matcher: SemiGlobal Block Matching stereo matcher based on the left image
+        :param disp_bounds: list containing global minimum and maximum of disparity map,
+                            useful to avoid "jumping color" problem (optional)
 
-        :return disp: colored disparity map
-        :return disp_gray: grayscale disparity map
-        :return dstL: NumPy array representing the undistorted and rectified left image
-        :return dstR: NumPy array representing the undistorted and rectified right image"""
-    # Undistort and rectify
-    dstL = cv2.remap(frameL, mapxL, mapyL, cv2.INTER_LINEAR)
-    dstR = cv2.remap(frameR, mapxR, mapyR, cv2.INTER_LINEAR)
+        :return disp: grayscale disparity map"""
 
-    # Crop frames if valid_ROI is provided
-    if valid_ROI is not None:
-        x, y, w, h = valid_ROI
-        dstL = dstL[y:y + h, x:x + w]
-        dstR = dstR[y:y + h, x:x + w]
+    # Compute disparity and normalize w.r.t. global max and min
+    disp = stereo_matcher.compute(dstL, dstR)
+    if disp_bounds is not None:
+        disp_bounds[0] = min(disp_bounds[0], disp.min())
+        disp_bounds[1] = max(disp_bounds[1], disp.max())
+        disp = (disp - disp_bounds[0]) * (65535.0 / (disp_bounds[1] - disp_bounds[0]))
+        disp = cv2.convertScaleAbs(disp, alpha=(255.0 / 65535.0))
+    else:
+        disp = cv2.normalize(src=disp,
+                             dst=None,
+                             alpha=0,
+                             beta=255,
+                             norm_type=cv2.NORM_MINMAX,
+                             dtype=cv2.CV_8U)
 
-    # Downsize
-    dstL = cv2.pyrDown(dstL)
-    dstR = cv2.pyrDown(dstR)
-
-    # Compute disparities concurrently using the grayscale version with enhanced contrast
-    dispL = stereo_matcherL.compute(dstL, dstR)
-    disp_gray = cv2.normalize(src=dispL,
-                              dst=None,
-                              alpha=0,
-                              beta=255,
-                              norm_type=cv2.NORM_MINMAX,
-                              dtype=cv2.CV_8U)
-    # Apply bilateral filter
-    disp_gray = cv2.bilateralFilter(disp_gray, d=5, sigmaColor=150, sigmaSpace=150)
-    # Denoise
-    kernel = np.ones((5, 5), np.uint8)
-    disp_gray = cv2.morphologyEx(disp_gray, cv2.MORPH_CLOSE, kernel)
-    # Apply colormap to disparity
-    disp = cv2.applyColorMap(disp_gray, cv2.COLORMAP_JET)
-    return disp, disp_gray, dstL, dstR
+    # Apply bilateral filter to disparity map
+    disp = cv2.bilateralFilter(disp, d=5, sigmaColor=150, sigmaSpace=150)
+    return disp
 
 
 def compute_depth(disp_point: int,

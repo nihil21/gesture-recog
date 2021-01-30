@@ -9,7 +9,7 @@ L_PORT: int = 8000
 R_PORT: int = 8001
 
 # Folders to store images for calibration
-IMG_FOLDER: str = "../calibration-images/"
+IMG_FOLDER: str = '../calibration-images/'
 
 # Chessboard size
 PATTERN_SIZE: Tuple[int, int] = (8, 5)
@@ -18,10 +18,13 @@ PATTERN_SIZE: Tuple[int, int] = (8, 5)
 SQUARE_LEN: float = 26.5  # mm
 
 # File where calibration data is stored
-CALIB_FILE: str = "../calibration-data/calib"  # .npz
+CALIB_FILE: str = '../calibration-data/calib'  # .npz
 
 # File where disparity data is stored
-DISP_FILE: str = "../calibration-data/disp"  # .npz
+DISP_FILE: str = '../calibration-data/disp'  # .npz
+
+# Folder to store dataset images
+DATA_FOLDER: str = '../dataset/'
 
 
 def print_title():
@@ -79,22 +82,21 @@ def main():
                  port=R_PORT)
 
     # Create StereoCamera object
-    print('Local endpoints towards sensors at {0:s}:{1:d} and {2:s}:{3:d} created'
-          .format(hostL['ip_addr'], hostL['port'], hostR['ip_addr'], hostR['port']))
+    print(f"Local endpoints towards sensors at {hostL['ip_addr']}:{hostL['port']} and "
+          f"{hostR['ip_addr']}:{hostR['port']} created")
     stereo_camera = StereoCamera(hostL, hostR)
     try:
         stereo_camera.load_calib_params(CALIB_FILE)
-        print('Calibration parameters loaded from file {0:s}, stereo camera is already calibrated'.format(CALIB_FILE))
+        print(f'Calibration parameters loaded from file {CALIB_FILE}, stereo camera is already calibrated')
     except IOError:
-        print('Could not load calibration parameters from file {0:s}, stereo camera must be calibrated before usage'
-              .format(CALIB_FILE))
+        print(f'Could not load calibration parameters from file {CALIB_FILE}, '
+              f'stereo camera must be calibrated before usage')
     try:
         stereo_camera.load_disp_params(DISP_FILE)
-        print('Disparity parameters loaded from file {0:s}, stereo camera has already the optimal parameters'
-              .format(DISP_FILE))
+        print(f'Disparity parameters loaded from file {DISP_FILE}, stereo camera has already the optimal parameters')
     except IOError:
-        print('Could not load disparity parameters from file {0:s}, optimal parameters must be tuned before usage'
-              .format(DISP_FILE))
+        print(f'Could not load disparity parameters from file {DISP_FILE}, '
+              'optimal parameters must be tuned before usage')
 
     try:
         while True:
@@ -109,17 +111,16 @@ def main():
                 try:
                     stereo_camera.calibrate(IMG_FOLDER, PATTERN_SIZE, SQUARE_LEN, CALIB_FILE)
                 except CalibrationImagesNotFoundError as e:
-                    print('There are no images to perform calibration in folder {0:s}, collect them first'
-                          .format(e.folder))
+                    print(f'There are no images to perform calibration in folder {e.folder}, collect them first')
                 except ChessboardNotFoundError as e:
-                    print('No chessboards were detected in the images provided in folder {0:s}, capture better images'
-                          .format(e.file))
+                    print(f'No chessboards were detected in the images provided in folder {e.file}, '
+                          f'capture better images')
             elif sel == 3:
                 stereo_camera.multicast_send('connected')
                 try:
                     stereo_camera.disp_map_tuning(DISP_FILE)
                 except MissingParametersError as e:
-                    print('{0:s} parameters missing'.format(e.parameter_cat))
+                    print(f'{e.parameter_cat} parameters missing')
             elif sel == 4:
                 stereo_camera.multicast_send('connected')
                 stereo_camera.realtime_disp_map()

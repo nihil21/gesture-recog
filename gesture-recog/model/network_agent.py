@@ -44,9 +44,9 @@ class NetworkAgent:
 
         # Perform the bind or the connect depending on the 'ip_addr' parameter
         if ip_addr is None:
-            self.sock.bind('tcp://*:{0:d}'.format(port))
+            self.sock.bind(f'tcp://*:{port}')
         else:
-            self.sock.connect('tcp://{:s}:{:d}'.format(ip_addr, port))
+            self.sock.connect(f'tcp://{ip_addr}:{port}')
 
     def send_msg(self, msg: str):
         """Method implementing the sending of a message over a TCP socket
@@ -94,14 +94,14 @@ class ImageSender(NetworkAgent):
     def __init__(self,
                  port: int,
                  res: Tuple[int, int],
-                 flip: Optional[bool] = False):
+                 rotate: Optional[bool] = False):
         """Initializes the ImageSender object by calling the 'NetworkAgent' __init__.py, so that it binds to a
         given port. Moreover, it sets the type of camera from which the streaming is performed (Webcam or PiCamera),
         and whether the image must be flipped or not (useful for particular hardware setups)
             :param port: integer representing the port to which the socket will be bound
             :param res: tuple of two ints representing the resolution of the camera
-            :param flip: optional boolean, if 'True' the image will be flipped before being sent (by default
-            it is set to 'False')"""
+            :param rotate: optional boolean, if 'True' the image will be rotated by 180 degrees
+                           before being sent (by default it is set to 'False')"""
 
         super().__init__(port=port)
 
@@ -113,7 +113,7 @@ class ImageSender(NetworkAgent):
         # Set resolution
         self.res = res
         # Set flip option
-        self.flip = flip
+        self.rotate = rotate
 
     def recv_frame(self):
         # Disable 'recv_frame' method
@@ -135,15 +135,15 @@ class ImageSender(NetworkAgent):
         # Send ready message to master and wait for the starting signal
         self.send_msg('ready')
         sig = self.recv_msg()
-        print('Master: {0:s}'.format(sig))
+        print(f'Master: {sig}')
 
         for capture in camera.capture_continuous(raw_capture, format='bgr', use_video_port=True):
             # Grab raw NumPy array representing the frame
             frame = capture.array
 
-            # Flip image, if specified
-            if self.flip:
-                frame = cv2.flip(frame, 0)
+            # Rotate image, if specified
+            if self.rotate:
+                frame = cv2.rotate(frame, cv2.ROTATE_180)
 
             # Send the frame
             self.send_frame(frame)
@@ -155,7 +155,7 @@ class ImageSender(NetworkAgent):
                 # If the recv succeeds, break from the loop
                 # noinspection PyUnresolvedReferences
                 sig = self.sock.recv_string(flags=zmq.NOBLOCK)
-                print('Master: {0:s}'.format(sig))
+                print(f'Master: {sig}')
                 break
             except zmq.Again:
                 pass
@@ -178,15 +178,15 @@ class ImageSender(NetworkAgent):
         # Send ready message to master and wait for the starting signal
         self.send_msg('ready')
         sig = self.recv_msg()
-        print('Master: {0:s}'.format(sig))
+        print(f'Master: {sig}')
 
         while True:
             # Grab frame from video
             ret, frame = video_capture.read()
 
-            # Flip image, if specified
-            if self.flip:
-                frame = cv2.flip(frame, 0)
+            # Rotate image, if specified
+            if self.rotate:
+                frame = cv2.rotate(frame, cv2.ROTATE_180)
 
             # Send the frame
             self.send_frame(frame)
@@ -196,7 +196,7 @@ class ImageSender(NetworkAgent):
                 # If the recv succeeds, break from the loop
                 # noinspection PyUnresolvedReferences
                 sig = self.sock.recv_string(flags=zmq.NOBLOCK)
-                print('Master: {0:s}'.format(sig))
+                print(f'Master: {sig}')
                 break
             except zmq.Again:
                 pass

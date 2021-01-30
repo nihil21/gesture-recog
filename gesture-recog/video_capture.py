@@ -16,8 +16,8 @@ def main():
     # Construct argument parser and add arguments to it
     ap = argparse.ArgumentParser()
     ap.add_argument('-o', '--orientation', required=True, help="left/right orientation of the sensor ('L'/'R')")
-    ap.add_argument('-f', '--flip', action='store_true', help='if set, image is flipped before it is sent to master '
-                                                              '(useful only in particular hardware setups)')
+    ap.add_argument('-r', '--rotate', action='store_true', help='if set, image is rotated by 180 degrees before being '
+                                                                'sent to master (useful in particular hardware setups)')
     args = vars(ap.parse_args())
 
     # Argument reading and check
@@ -28,16 +28,16 @@ def main():
         port = R_PORT
     else:
         sys.exit("Argument 'orientation' must be either 'L' for left or 'R' for right.")
-    flip = args['flip']
+    rotate = args['rotate']
 
     # Create Sensor object
-    sender = ImageSender(port, RES, flip)
+    sender = ImageSender(port, RES, rotate)
 
     try:
         while True:
-            print('Waiting on port {0:d}...'.format(port))
+            print(f'Waiting on port {port}...')
             sig = sender.recv_msg()
-            print('Master: {0:s}'.format(sig))
+            print(f'Master: {sig}')
 
             # Start streaming
             sender.stream()
