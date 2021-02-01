@@ -1,7 +1,6 @@
 import zmq
 import numpy as np
 import cv2
-import base64
 import time
 from typing import Tuple, Optional
 try:
@@ -61,16 +60,17 @@ class NetworkAgent:
     def send_frame(self, frame: np.ndarray):
         """Method that enables an OpenCV image/NumPy array to be sent over a TCP socket
             :param frame: the OpenCV image/NumPy array to be serialized and sent over the socket"""
-        encoded, buffer = cv2.imencode('.jpg', frame)
-        jpg_as_text = base64.b64encode(buffer)
-        self.sock.send(jpg_as_text)
+        md = {'dtype': str(frame.dtype), 'shape': frame.shape}
+        # noinspection PyUnresolvedReferences
+        self.sock.send_json(md, 0 | zmq.SNDMORE)  # send metadata
+        self.sock.send(frame)
 
     def recv_frame(self) -> np.ndarray:
         """Method that enables a OpenCV image/NumPy array to be received through a TCP socket
             :return the reconstructed OpenCV image/NumPy array received through the socket"""
-        serial_frame = self.sock.recv_string()
-        buffer = base64.b64decode(serial_frame)
-        frame = cv2.imdecode(np.fromstring(buffer, dtype=np.uint8), 1)
+        md = self.sock.recv_json()
+        buf = bytes(memoryview(self.sock.recv()))
+        frame = np.frombuffer(buf, dtype=md['dtype']).reshape(md['shape'])
         return frame
 
     def close(self):

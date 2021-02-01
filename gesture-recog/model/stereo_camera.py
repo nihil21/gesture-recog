@@ -3,6 +3,7 @@ import glob
 from datetime import datetime
 import matplotlib.pyplot as plt
 import psutil
+from queue import Queue
 from model.errors import *
 from model.network_agent import ImageReceiver
 from utils.image_proc_tools import *
@@ -161,18 +162,18 @@ class StereoCamera:
 
             # Display counter on screen before saving frame
             if n_sec < tot_sec:
-                # Draw on screen the current remaining seconds
+                # Draw on screen the current remaining pictures
                 cv2.putText(img=flipped_frameL,
-                            text=str_sec[n_sec],
+                            text=f'{n_pics}/{tot_pics}',
                             org=(int(10), int(40)),
                             fontFace=cv2.FONT_HERSHEY_DUPLEX,
                             fontScale=1,
                             color=(255, 255, 255),
                             thickness=3,
                             lineType=cv2.LINE_AA)
-                # Draw on screen the current remaining pictures
+                # Draw on screen the current remaining seconds
                 cv2.putText(img=flipped_frameR,
-                            text=f'{n_pics}/{tot_pics}',
+                            text=str_sec[n_sec],
                             org=(int(10), int(40)),
                             fontFace=cv2.FONT_HERSHEY_DUPLEX,
                             fontScale=1,
@@ -399,7 +400,7 @@ class StereoCamera:
 
             if n_sec < tot_sec:
                 # Draw on screen the current remaining seconds
-                cv2.putText(img=flipped_dstL,
+                cv2.putText(img=flipped_dstR,
                             text=str_sec[n_sec],
                             org=(int(10), int(40)),
                             fontFace=cv2.FONT_HERSHEY_DUPLEX,

@@ -82,7 +82,10 @@ def compute_disparity(dstL: np.ndarray,
                              dtype=cv2.CV_8U)
 
     # Apply bilateral filter to disparity map
-    disp = cv2.bilateralFilter(disp, d=5, sigmaColor=150, sigmaSpace=150)
+    disp = cv2.bilateralFilter(disp, d=5, sigmaColor=100, sigmaSpace=100)
+    # Refine with close operator
+    # kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    # disp = cv2.morphologyEx(disp, cv2.MORPH_CLOSE, kernel)
     return disp
 
 
@@ -107,14 +110,3 @@ def compute_depth(disp_point: int,
     alpha_u = (alpha_uL + alpha_uR) / 2
     # Compute the depth
     return alpha_u * baseline / (disp_point + u_0R - u_0L)
-
-
-def process_segment():
-    seg_img = cv2.imread('../disp-samples/Hand.jpg')
-    gray_seg_img = cv2.cvtColor(seg_img, cv2.COLOR_BGR2GRAY)
-
-    contours, _ = cv2.findContours(gray_seg_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    cv2.drawContours(seg_img, contours, -1, (0, 255, 0), 3)
-    cv2.imshow("Img", seg_img)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
