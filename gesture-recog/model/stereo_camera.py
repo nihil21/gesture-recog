@@ -4,11 +4,13 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import psutil
 from queue import Queue
+from threading import Event
 from model.errors import *
 from model.network_agent import ImageReceiver
 from utils.image_proc_tools import *
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from typing import Dict, Union, Tuple
+import time
 
 
 class StereoCamera:
@@ -76,8 +78,11 @@ class StereoCamera:
         with ThreadPoolExecutor(max_workers=2) as executor:
             futureL = executor.submit(self.left_sensor.recv_frame)
             futureR = executor.submit(self.right_sensor.recv_frame)
-
-            return futureL.result(), futureR.result()
+            frameL, tstampL = futureL.result()
+            frameR, tstampR = futureR.result()
+            print(f'L: {tstampL:.3f} s, R: {tstampR:.3f} s, Latency between cameras: {tstampL - tstampR:.3f} s')
+            print(f'Latency: {time.time() - tstampL:.3f} s')
+            return frameL, frameR
 
     def load_calib_params(self, calib_file: str):
         # Load calibration parameters from file
@@ -127,6 +132,16 @@ class StereoCamera:
         """Method that closes the sockets and the contexts of both ImageSender objects to free resources"""
         self.left_sensor.close()
         self.right_sensor.close()
+
+    def read_frames_to_buffer(self, bufferL: Queue, bufferR: Queue, term: Event):
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            while not term:
+                futureL = executor.submit(self.left_sensor.recv_frame)
+                futureR = executor.submit(self.right_sensor.recv_frame)
+                frameL, tstampL = futureL.result()
+                frameR, tstampR = futureR.result()
+                bufferL.put((frameL, tstampL))
+                bufferR.put((frameR, tstampR))
 
     def capture_sample_images(self, img_folder: str):
         """Function which captures sample stereo images
