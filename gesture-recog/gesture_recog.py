@@ -5,8 +5,8 @@ from model.errors import *
 from typing import Tuple
 
 # Ports of the sensors
-L_PORT: int = 8000
-R_PORT: int = 8001
+IMG_PORT: int = 8000
+CTRL_PORT: int = 8001
 
 # Folders to store images for calibration
 IMG_FOLDER: str = '../calibration-images/'
@@ -75,16 +75,17 @@ def main():
     ap.add_argument('-iR', '--ip_addrR', required=True, help='hostname of the right sensor')
     args = vars(ap.parse_args())
 
-    # Create two dictionaries for left and right endpoints
-    hostL = dict(ip_addr=args['ip_addrL'],
-                 port=L_PORT)
-    hostR = dict(ip_addr=args['ip_addrR'],
-                 port=R_PORT)
+    ip_addrL = args['ip_addrL']
+    ip_addrR = args['ip_addrR']
 
     # Create StereoCamera object
-    print(f"Local endpoints towards sensors at {hostL['ip_addr']}:{hostL['port']} and "
-          f"{hostR['ip_addr']}:{hostR['port']} created")
-    stereo_camera = StereoCamera(hostL, hostR)
+    print('Local endpoints created:')
+    print(f'\t{ip_addrL}:{IMG_PORT} for image streaming from left sensor')
+    print(f'\t{ip_addrR}:{IMG_PORT} for image streaming from right sensor')
+    print(f'\t{ip_addrL}:{CTRL_PORT} for control signals to left sensor')
+    print(f'\t{ip_addrR}:{CTRL_PORT} for control signals to right sensor')
+
+    stereo_camera = StereoCamera(ip_addrL, ip_addrR, IMG_PORT, CTRL_PORT)
     try:
         stereo_camera.load_calib_params(CALIB_FILE)
         print(f'Calibration parameters loaded from file {CALIB_FILE}, stereo camera is already calibrated')
@@ -105,7 +106,7 @@ def main():
 
             # Invoke corresponding function
             if sel == 1:
-                stereo_camera.multicast_send('connected')
+                stereo_camera.multicast_send_sig(b'STREAM')
                 stereo_camera.capture_sample_images(IMG_FOLDER)
             elif sel == 2:
                 try:
@@ -116,13 +117,13 @@ def main():
                     print(f'No chessboards were detected in the images provided in folder {e.file}, '
                           f'capture better images')
             elif sel == 3:
-                stereo_camera.multicast_send('connected')
+                stereo_camera.multicast_send_sig(b'STREAM')
                 try:
                     stereo_camera.disp_map_tuning(DISP_FILE)
                 except MissingParametersError as e:
                     print(f'{e.parameter_cat} parameters missing')
             elif sel == 4:
-                stereo_camera.multicast_send('connected')
+                stereo_camera.multicast_send_sig(B'STREAM')
                 stereo_camera.realtime_disp_map()
             elif sel == 5:
                 break

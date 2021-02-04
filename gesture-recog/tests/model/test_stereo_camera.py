@@ -46,6 +46,6 @@ class TestStereoCamera(unittest.TestCase):
         arrayR = np.random.rand(*RES)
         self.senderL.send_frame(arrayL)
         self.senderR.send_frame(arrayR)
-        res = self.stereo.recv_stereo_frames()
+        res = self.stereo._recv_stereo_frames()
         self.assertIsNone(np.testing.assert_almost_equal(res['L'], arrayL))
         self.assertIsNone(np.testing.assert_almost_equal(res['R'], arrayR))
