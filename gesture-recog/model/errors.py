@@ -1,10 +1,20 @@
+class OutOfSyncError(Exception):
+    """Exception raised when the two sensors go out of sync.
+
+    Attributes:
+        delay -- the detected delay between the two sensors"""
+
+    def __init__(self, delay: float):
+        self.delay = delay
+
+
 class CalibrationImagesNotFoundError(Exception):
     """Exception raised when no calibration image is found in the given folder.
 
     Attributes:
         folder -- the path to the folder where calibration images should be found"""
 
-    def __init__(self, folder):
+    def __init__(self, folder: str):
         self.folder = folder
 
 

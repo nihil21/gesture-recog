@@ -143,12 +143,19 @@ class ImageSender(NetworkAgent):
             # Send the frame
             self.send_frame(frame)
 
-            # Try to read the termination signal from a non-blocking recv
+            # Try to read control signals from a non-blocking recv
             try:
-                # If the recv succeeds, break from the loop
+                # If the recv succeeds, check the signal
                 sig = self.recv_sig(noblock=True)
                 print(f'Master: {sig}')
-                break
+                if sig == 'RESET':
+                    print('Resetting the sensor...')
+                    # Send ready message to master and wait for the starting signal
+                    self.send_sig(b'READY')
+                    sig = self.recv_sig()
+                    print(f'Master: {sig}')
+                else:
+                    break
             except zmq.Again:
                 pass
         print('Streaming ended.')

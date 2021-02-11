@@ -9,9 +9,12 @@ import psutil
 import time
 import matplotlib.pyplot as plt
 from threading import Thread, Event
-from queue import Queue
+from collections import deque
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
-from typing import Tuple, Optional
+from typing import Tuple
+
+
+DELAY_TOL = 0.3
 
 
 class StereoCamera:
@@ -21,11 +24,17 @@ class StereoCamera:
     Attributes:
         _left_sensor --- ImageSender objects related to the left sensor
         _right_sensor --- ImageSender objects related to the right sensor
-        _stereo_frames --- attribute in which the most recent frames are stored
-        _data_ready --- event that notifies the main process if a new pair of frames has been read
-        _kill_thread --- event that kills the IO thread
-        _io_thread --- IO thread that concurrently reads from the two sensor's SUB sockets and saves the frames
-                       to the _stereo_frames field
+        _io_ref_thread --- reference IO thread that reads from the left sensor's SUB socket and stores both the
+                           timestamp and the frame as reference, respectively in _ref_timestamp and in _ref_frame fields
+        _ref_timestamp --- timestamp of the left frame, used as reference to find the right frame with minimum delay
+        _ref_frame --- left frame, used as reference
+        _data_ready_ref --- event that notifies the main process when new data has been read from the left sensor
+        _io_sec_thread --- secondary IO thread that reads from the right sensor's SUB socket and stores the pair
+                           (timestamp, frame) in the _sec_buffer queue
+        _sec_buffer --- queue which keeps the 5 most recent frames from the right sensor
+        _data_ready_sec --- event that notifies the main process when new data has been read from the right sensor
+        _trigger_kill_threads --- event that kills the two IO threads
+
         _calib_params --- dictionary containing the calibration parameters (initially empty)
         _disp_params --- dictionary containing the disparity parameters (initially empty)
         _is_calibrated --- boolean variable indicating whether the stereo camera is calibrated or not
@@ -39,10 +48,14 @@ class StereoCamera:
         two ImageReceiver objects
         multicast_recv_sig --- method which enables the concurrent reception of a control signal via the
         two ImageReceiver objects
-        _create_io_thread --- method which creates and starts an IO thread to read the frames in background
-        _kill_io_thread --- method which kills the IO thread
-        _read_stereo_frames_in_background --- target of the IO thread: it repeatedly reads new frames from both sensors
-        _recv_stereo_frames --- method which returns the most recent frames
+        _create_io_threads --- method which creates and starts the two IO threads to read the frames in background
+        _kill_io_threads --- method which kills the two IO threads
+        _recv_frame_in_background_sec --- target of the secondary IO thread: it repeatedly reads new data from the right
+                                          sensor and stores it in a queue
+        _recv_frame_in_background_ref --- target of the reference IO thread: it repeatedly reads new data from the left
+                                          sensor and stores it in a field
+        _read_stereo_frames --- method that determines which right frame in the queue has the minimum delay w.r.t. the
+                                reference frame, and returns the stereo pair
         load_calib_params --- method which reads the calibration parameters from a given file
         _set_calib_params --- method which sets/updates the calibration parameters
         _save_calib_params --- method which persists the calibration parameters to a given file
@@ -62,11 +75,15 @@ class StereoCamera:
         # Set up one ImageReceiver object for each sensor
         self._left_sensor = ImageReceiver(ip_addrL, img_port, ctrl_port)
         self._right_sensor = ImageReceiver(ip_addrR, img_port, ctrl_port)
-        # Set up an IO thread to read from the two sensors
-        self._io_thread = None
-        self._data_ready_event = Event()
-        self._kill_thread_event = Event()
-        self._stereo_frames: Optional[Tuple[float, np.ndarray]] = None
+        # Set up two IO thread to read from the two sensors
+        self._io_ref_thread = None
+        self._ref_timestamp = None
+        self._ref_frame = None
+        self._data_ready_ref = Event()
+        self._io_sec_thread = None
+        self._sec_buffer = deque(maxlen=5)
+        self._data_ready_sec = Event()
+        self._trigger_kill_threads = Event()
         # Calibration data
         self._calib_params = {}
         self._disp_params = {}
@@ -92,38 +109,64 @@ class StereoCamera:
             sigR = futureR.result()
         return sigL, sigR
 
-    def _create_io_thread(self):
+    def _create_io_threads(self):
         """Methods which creates and starts the IO thread."""
-        self._kill_thread_event.clear()
-        self._io_thread = Thread(target=self._read_stereo_frames_in_background, args=())
-        self._io_thread.start()
+        self._trigger_kill_threads.clear()
+        self._io_ref_thread = Thread(target=self._recv_frame_in_background_ref, args=())
+        self._io_sec_thread = Thread(target=self._recv_frame_in_background_sec, args=())
+        self._io_ref_thread.start()
+        self._io_sec_thread.start()
 
-    def _kill_io_thread(self):
-        """Methods which kills the IO thread."""
-        self._kill_thread_event.set()
-        self._io_thread.join()
+    def _kill_io_threads(self):
+        """Methods which kills the IO threads, clears the thread events concerning data, and flushes the sockets."""
+        self._trigger_kill_threads.set()
+        self._io_ref_thread.join()
+        self._io_sec_thread.join()
+        # Clear events
+        self._data_ready_ref.clear()
+        self._data_ready_sec.clear()
+        # Set to None reference frame and reference timestamp, and clear the buffer
+        self._ref_frame = None
+        self._ref_timestamp = None
+        self._sec_buffer.clear()
+        # Flush pending frames
+        self._flush_pending_stereo_frames()
+        print('\nPending frames flushed.')
 
-    def _read_stereo_frames_in_background(self):
-        """Methods which is meant to be executed by an IO thread: it repeatedly reads in background a pair of frames
-        from the two sensors and stores it."""
-        while not self._kill_thread_event.is_set():
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                futureL = executor.submit(self._left_sensor.recv_frame)
-                futureR = executor.submit(self._right_sensor.recv_frame)
-                tstampL, frameL = futureL.result()
-                tstampR, frameR = futureR.result()
-            left_right_delay = tstampL - tstampR
-            print(f'\rLatency: {time.time() - tstampL:.3f} s --- Left-Right Delay: {left_right_delay:.3f} s', end='')
-            self._stereo_frames = frameL, frameR
-            self._data_ready_event.set()
+    def _recv_frame_in_background_ref(self):
+        """Methods which is meant to be executed by the reference IO thread: it repeatedly reads in background a frame
+        from the left sensor and stores it as the reference frame and timestamp."""
+        while not self._trigger_kill_threads.is_set():
+            tstamp, frame = self._left_sensor.recv_frame()
+            self._ref_frame = frame
+            self._ref_timestamp = tstamp
+            self._data_ready_ref.set()
 
-    def _recv_stereo_frames(self) -> (np.ndarray, np.ndarray):
+    def _recv_frame_in_background_sec(self):
+        """Methods which is meant to be executed by the secondary IO thread: it repeatedly reads in background a frame
+        from the right sensor and saves it in a temporary buffer."""
+        while not self._trigger_kill_threads.is_set():
+            self._sec_buffer.append(self._right_sensor.recv_frame())
+            self._data_ready_sec.set()
+
+    def _read_stereo_frames(self) -> (np.ndarray, np.ndarray):
         """Method which reads from the IO thread the most recent pair of stereo frames.
             :returns a tuple containing the two frames"""
-        if not self._data_ready_event.wait(timeout=1.0):
-            raise TimeoutError('Timeout while reading from the sensors.')
-        self._data_ready_event.clear()
-        return self._stereo_frames
+        if not self._data_ready_ref.wait(timeout=1.0):
+            raise TimeoutError('Timeout while reading from the left sensors.')
+        if not self._data_ready_sec.wait(timeout=1.0):
+            raise TimeoutError('Timeout while reading from the right sensors.')
+
+        delay_dict = {abs(self._ref_timestamp - _sec_timestamp): _sec_frame
+                      for _sec_timestamp, _sec_frame in self._sec_buffer}
+        best_left_right_delay, best_match_frame = min(delay_dict.items())
+        self._data_ready_ref.clear()
+        self._data_ready_sec.clear()
+        if best_left_right_delay > DELAY_TOL:
+            raise OutOfSyncError(best_left_right_delay)
+        latency = time.time() - self._ref_timestamp
+        print(f'\rLatency: {latency:.3f} s --- Left-Right Delay: {best_left_right_delay:.3f} s', end='')
+        return self._ref_frame, best_match_frame
 
     def load_calib_params(self, calib_file: str):
         # Load calibration parameters from file
@@ -163,11 +206,24 @@ class StereoCamera:
         # Save disparity parameters to file
         np.savez_compressed(**disp_file_to_save)
 
-    def flush_pending_stereo_frames(self):
-        """Method that concurrently flushes the pending frames of both ImageReceiver objects."""
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            executor.submit(self._left_sensor.flush_pending_frames)
-            executor.submit(self._right_sensor.flush_pending_frames)
+    def _flush_pending_stereo_frames(self):
+        """Method that flushes the pending frames of both ImageReceiver objects."""
+        self._left_sensor.flush_pending_frames()
+        self._right_sensor.flush_pending_frames()
+
+    def _reset_sensors(self):
+        # Send reset signal to both sensors
+        self.multicast_send_sig(b'RESET')
+        # Kill IO threads
+        self._kill_io_threads()
+        # Wait for ready signal from sensors and then send start signal
+        sigL, sigR = self.multicast_recv_sig()
+        print(f'Left sensor: {sigL}')
+        print(f'Right sensor: {sigR}')
+        print('Both sensors are ready')
+        self.multicast_send_sig(b'START')
+        # Re-create IO threads
+        self._create_io_threads()
 
     def close(self):
         """Method that closes the sockets and the contexts of both ImageSender objects to free resources."""
@@ -196,13 +252,18 @@ class StereoCamera:
 
         # Synchronize sensors with a start signal
         self.multicast_send_sig(b'START')
-        self._create_io_thread()
+        self._create_io_threads()
 
         # Save start time
         start_time = time.time()
         while True:
             # Get frames from both cameras
-            frameL, frameR = self._recv_stereo_frames()
+            try:
+                frameL, frameR = self._read_stereo_frames()
+            except OutOfSyncError as e:
+                print(f'\nThe two sensors are out of sync of {e.delay:3f} s and must be restarted.')
+                self._reset_sensors()
+                continue
             # Flip frames horizontally to make it more comfortable for humans
             flipped_frameL = cv2.flip(frameL, 1)
             flipped_frameR = cv2.flip(frameR, 1)
@@ -253,14 +314,10 @@ class StereoCamera:
             # termination signal is sent to the sensors and streaming ends
             if (cv2.waitKey(1) & 0xFF == ord('q')) or n_pics == tot_pics:
                 self.multicast_send_sig(b'STOP')
-                self._kill_io_thread()
-                print('\nStreaming ended.')
+                self._kill_io_threads()
                 break
-
-        print('Images collected.')
         cv2.destroyAllWindows()
-        self.flush_pending_stereo_frames()
-        print('Pending frames flushed.')
+        print('Images collected.')
 
     def calibrate(self,
                   img_folder: str,
@@ -358,23 +415,23 @@ class StereoCamera:
         mapxR, mapyR = cv2.initUndistortRectifyMap(cam_mtxR, distR, rot_mtxR, proj_mtxR, (w, h), cv2.CV_32FC1)
 
         # Save all camera parameters to .npz files
-        calib_params = dict(cam_mtxL=cam_mtxL,
-                            cam_mtxR=cam_mtxR,
-                            disp_to_depth_mtx=disp_to_depth_mtx,
-                            distL=distL,
-                            distR=distR,
-                            mapxL=mapxL,
-                            mapxR=mapxR,
-                            mapyL=mapyL,
-                            mapyR=mapyR,
-                            proj_mtxL=proj_mtxL,
-                            proj_mtxR=proj_mtxR,
-                            rot_mtx=rot_mtx,
-                            rot_mtxL=rot_mtxL,
-                            rot_mtxR=rot_mtxR,
-                            trasl_mtx=trasl_mtx,
-                            valid_ROIL=valid_ROIL,
-                            valid_ROIR=valid_ROIR)
+        calib_params = {'cam_mtxL': cam_mtxL,
+                        'cam_mtxR': cam_mtxR,
+                        'disp_to_depth_mtx': disp_to_depth_mtx,
+                        'distL': distL,
+                        'distR': distR,
+                        'mapxL': mapxL,
+                        'mapxR': mapxR,
+                        'mapyL': mapyL,
+                        'mapyR': mapyR,
+                        'proj_mtxL': proj_mtxL,
+                        'proj_mtxR': proj_mtxR,
+                        'rot_mtx': rot_mtx,
+                        'rot_mtxL': rot_mtxL,
+                        'rot_mtxR': rot_mtxR,
+                        'trasl_mtx': trasl_mtx,
+                        'valid_ROIL': valid_ROIL,
+                        'valid_ROIR': valid_ROIR}
         self._set_calib_params(calib_params)
         self._save_calib_params(calib_file)
         print('Calibration parameters saved to file')
@@ -433,13 +490,20 @@ class StereoCamera:
 
         # Synchronize sensors with a start signal
         self.multicast_send_sig(b'START')
+        self._create_io_threads()
 
         # Save start time
         start_time = time.time()
 
+        dstL, dstR = None, None
         while True:
             # Get frames from both cameras and apply camera corrections
-            frameL, frameR = self._recv_stereo_frames()
+            try:
+                frameL, frameR = self._read_stereo_frames()
+            except OutOfSyncError as e:
+                print(f'\nThe two sensors are out of sync of {e.delay:3f} s and must be restarted.')
+                self._reset_sensors()
+                continue
             dstL, dstR = self.undistort_rectify(frameL, frameR)
             # Flip frames horizontally to make it more comfortable for humans
             flipped_dstL = cv2.flip(dstL, 1)
@@ -462,7 +526,8 @@ class StereoCamera:
                     n_sec += 1
                     start_time = time.time()
             else:
-                print()
+                self.multicast_send_sig(b'STOP')
+                self._kill_io_threads()
                 break
 
             # Display side by side the frames
@@ -470,15 +535,7 @@ class StereoCamera:
             cv2.imshow('Left and right frames', frames)
             cv2.waitKey(1)
         cv2.destroyAllWindows()
-
-        # When countdown ends, streaming is stopped, sockets are flushed and last frames are kept
-        self.multicast_send_sig(b'STOP')
-        self.flush_pending_stereo_frames()
-        print('Pending frames flushed.')
-
-        # Downsize
-        dstL = cv2.resize(dstL, (480, 360))
-        dstR = cv2.resize(dstR, (480, 360))
+        print('Sample image captured.')
 
         # Create named window and sliders for tuning
         window_label = 'Disparity tuning'
@@ -551,8 +608,6 @@ class StereoCamera:
 
             # If 'q' is pressed, exit and return parameters
             if cv2.waitKey(1) & 0xFF == ord('q'):
-                cv2.imwrite('../disp-samples/rect_dstL.jpg', dstL)
-                cv2.imwrite('../disp-samples/rect_dstR.jpg', dstR)
                 disp_params = {'MDS': MDS,
                                'NOD': NOD,
                                'SWS': SWS,
@@ -571,6 +626,8 @@ class StereoCamera:
     def realtime_disp_map(self):
         """Displays a real-time disparity map"""
         print('Displaying real-time disparity map...')
+        # Reset disparity bounds
+        self._disp_bounds = [np.inf, -np.inf]
         # Load calibration and disparity data
         if not self._is_calibrated:
             raise MissingParametersError('Calibration')
@@ -594,11 +651,11 @@ class StereoCamera:
         )
 
         # Compute valid ROI
-        valid_ROI = cv2.getValidDisparityROI(roi1=tuple(self._calib_params['valid_ROIL']),
-                                             roi2=tuple(self._calib_params['valid_ROIR']),
-                                             minDisparity=self._disp_params['MDS'],
-                                             numberOfDisparities=self._disp_params['NOD'],
-                                             blockSize=self._disp_params['SWS'])
+        # valid_ROI = cv2.getValidDisparityROI(roi1=tuple(self._calib_params['valid_ROIL']),
+        #                                      roi2=tuple(self._calib_params['valid_ROIR']),
+        #                                      minDisparity=self._disp_params['MDS'],
+        #                                      numberOfDisparities=self._disp_params['NOD'],
+        #                                      blockSize=self._disp_params['SWS'])
 
         # Define skin color bounds in YCbCr color space
         skin_lower = np.array([0, 133, 77], dtype=np.uint8)
@@ -612,52 +669,49 @@ class StereoCamera:
 
         # Synchronize sensors with a start signal
         self.multicast_send_sig(b'START')
+        self._create_io_threads()
 
-        disp_hist = []
         while True:
             # Get frames from both cameras and apply camera corrections
-            frameL, frameR = self._recv_stereo_frames()
+            try:
+                frameL, frameR = self._read_stereo_frames()
+            except OutOfSyncError as e:
+                print(f'\nThe two sensors are out of sync of {e.delay:3f} s and must be restarted.')
+                self._reset_sensors()
+                continue
             dstL, dstR = self.undistort_rectify(frameL, frameR)
 
             # Crop frames to valid ROI
-            x, y, w, h = valid_ROI
-            dstL = dstL[y:y + h, x:x + w]
-            dstR = dstR[y:y + h, x:x + w]
-
-            # Downsize
-            dstL = cv2.resize(dstL, (480, 360))
-            dstR = cv2.resize(dstR, (480, 360))
+            # x, y, w, h = valid_ROI
+            # dstL = dstL[y:y + h, x:x + w]
+            # dstR = dstR[y:y + h, x:x + w]
 
             # Compute disparity map
             disp = compute_disparity(dstL, dstR, stereo_matcher, self._disp_bounds)
-            # Denoise disparity map by averaging along temporal dimension
-            # if len(disp_hist) == 2:
-            #    disp = cv2.fastNlMeansDenoisingMulti([disp_hist[0], disp, disp_hist[1]], imgToDenoiseIndex=1,
-            #                                          temporalWindowSize=3, templateWindowSize=1)
-            #    disp_hist.pop(0)
-            # disp_hist.append(disp)
 
             # Apply colormap to disparity
             disp_color = cv2.applyColorMap(disp, cv2.COLORMAP_PLASMA)
 
             # Segment hand
             # Step 1: threshold disparity map
-            _, disp_mask = cv2.threshold(disp, 185, 255, cv2.THRESH_BINARY)
+            _, disp_mask = cv2.threshold(disp, 191, 255, cv2.THRESH_BINARY)
             # Step 2: convert frame to YCbCr color space and segment pixels in the given range
             converted = cv2.cvtColor(dstL, cv2.COLOR_BGR2YCrCb)
             skin_mask = cv2.inRange(converted, skin_lower, skin_upper)
-            # Step 3: refine masks
-            # kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-            # disp_mask = cv2.morphologyEx(disp_mask, cv2.MORPH_OPEN, kernel)
-            # skin_mask = cv2.morphologyEx(skin_mask, cv2.MORPH_OPEN, kernel)
-            # Step 4: apply both masks on the frame
+            # Step 3: apply both masks to the frame
             mask = np.bitwise_and(skin_mask, disp_mask)
             hand = cv2.bitwise_and(dstL.astype(np.uint8), dstL.astype(np.uint8), mask=mask)
             hand_disp = cv2.bitwise_and(disp, disp, mask=mask)
-            # Step 5: apply close operator to refine the segmented image
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+            # Step 4: apply close operator to refine the segmented image
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
             hand = cv2.morphologyEx(hand, cv2.MORPH_CLOSE, kernel)
             hand_disp = cv2.morphologyEx(hand_disp, cv2.MORPH_CLOSE, kernel)
+
+            # Get depth information from disparity map
+            hand_depth = cv2.reprojectImageTo3D(hand_disp, Q=self._disp_params['disp_to_depth_mtx'],
+                                                handleMissingValues=True)
+
+            # TODO: insert ML algorithm here
 
             # Display frames and disparity maps
             frames = np.hstack((dstL, dstR))
@@ -667,12 +721,8 @@ class StereoCamera:
 
             # When 'q' is pressed, save current frames and disparity maps to file and break the loop
             if cv2.waitKey(1) & 0xFF == ord('q'):
-                cv2.imwrite('../disp-samples/Stereo_image.jpg', frames)
-                cv2.imwrite('../disp-samples/Disparity.jpg', disp)
-                # cv2.imwrite('../disp-samples/Hand.jpg', hand)
                 self.multicast_send_sig(b'STOP')
-                print()
+                self._kill_io_threads()
                 break
         cv2.destroyAllWindows()
-        self.flush_pending_stereo_frames()
-        print('Pending frames flushed.')
+        print('Streaming ended.')
