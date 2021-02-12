@@ -1,6 +1,6 @@
-from network.network_agent import ImageReceiver
-from camera.image_proc_tools import compute_disparity, process_stereo_image
-from camera.errors import *
+from stereo_camera.network_agent import ImageReceiver
+from stereo_camera.image_proc_tools import compute_disparity, process_stereo_image
+from stereo_camera.errors import *
 import cv2
 import numpy as np
 import os
@@ -37,9 +37,9 @@ class StereoCamera:
 
         _calib_params --- dictionary containing the calibration parameters (initially empty)
         _disp_params --- dictionary containing the disparity parameters (initially empty)
-        _is_calibrated --- boolean variable indicating whether the stereo camera is calibrated or not
+        _is_calibrated --- boolean variable indicating whether the stereo sensor is calibrated or not
         (initially set to 'False')
-        _has_disparity_params --- boolean variable indicating whether the stereo camera has disparity
+        _has_disparity_params --- boolean variable indicating whether the stereo sensor has disparity
         _parameters set or not (initially set to 'False')
         _disp_bounds --- tuple of floats representing the minimum and maximum disparity values detected
 
@@ -324,7 +324,7 @@ class StereoCamera:
                   pattern_size: Tuple[int, int],
                   square_length: float,
                   calib_file: str):
-        """Computes the calibration parameters of a camera by using several pictures of a chessboard
+        """Computes the calibration parameters of a sensor by using several pictures of a chessboard
             :param img_folder: string representing the path to the folder in which images are saved
             :param pattern_size: size of the chessboard used for calibration
             :param square_length: float representing the length, in mm, of the square edge
@@ -380,10 +380,10 @@ class StereoCamera:
         for i in range(0, len(img_pointsL)):
             obj_points.append(pattern_points)
 
-        # Get camera size
+        # Get sensor size
         h, w = stereo_img_drawn_corners_list[0][0].shape[:2]
 
-        # Calibrate concurrently single cameras and get the camera intrinsic parameters
+        # Calibrate concurrently single cameras and get the sensor intrinsic parameters
         print('Calibrating left and right sensors...')
         with ProcessPoolExecutor(max_workers=2) as executor:
             futureL = executor.submit(cv2.calibrateCamera, obj_points, img_pointsL, (w, h), None, None)
@@ -394,8 +394,8 @@ class StereoCamera:
         print(f'Left sensor calibrated, RMS = {rmsL:.5f}')
         print(f'Right sensor calibrated, RMS = {rmsR:.5f}')
 
-        # Use intrinsic parameters to calibrate more reliably the stereo camera
-        print('Calibrating stereo camera...')
+        # Use intrinsic parameters to calibrate more reliably the stereo sensor
+        print('Calibrating stereo sensor...')
         flag = cv2.CALIB_FIX_INTRINSIC
         error, cam_mtxL, distL, cam_mtxR, distR, rot_mtx, trasl_mtx, e_mtx, f_mtx = cv2.stereoCalibrate(obj_points,
                                                                                                         img_pointsL,
@@ -406,7 +406,7 @@ class StereoCamera:
                                                                                                         distR,
                                                                                                         (w, h),
                                                                                                         flags=flag)
-        print(f'Stereo camera calibrated, error: {error:.5f}')
+        print(f'Stereo sensor calibrated, error: {error:.5f}')
         rot_mtxL, rot_mtxR, proj_mtxL, proj_mtxR, disp_to_depth_mtx, valid_ROIL, valid_ROIR = cv2.stereoRectify(
             cam_mtxL, distL, cam_mtxR, distR, (w, h), rot_mtx, trasl_mtx
         )
@@ -414,7 +414,7 @@ class StereoCamera:
         mapxL, mapyL = cv2.initUndistortRectifyMap(cam_mtxL, distL, rot_mtxL, proj_mtxL, (w, h), cv2.CV_32FC1)
         mapxR, mapyR = cv2.initUndistortRectifyMap(cam_mtxR, distR, rot_mtxR, proj_mtxR, (w, h), cv2.CV_32FC1)
 
-        # Save all camera parameters to .npz files
+        # Save all sensor parameters to .npz files
         calib_params = {'cam_mtxL': cam_mtxL,
                         'cam_mtxR': cam_mtxR,
                         'disp_to_depth_mtx': disp_to_depth_mtx,
@@ -497,7 +497,7 @@ class StereoCamera:
 
         dstL, dstR = None, None
         while True:
-            # Get frames from both cameras and apply camera corrections
+            # Get frames from both cameras and apply sensor corrections
             try:
                 frameL, frameR = self._read_stereo_frames()
             except OutOfSyncError as e:
@@ -672,7 +672,7 @@ class StereoCamera:
         self._create_io_threads()
 
         while True:
-            # Get frames from both cameras and apply camera corrections
+            # Get frames from both cameras and apply sensor corrections
             try:
                 frameL, frameR = self._read_stereo_frames()
             except OutOfSyncError as e:

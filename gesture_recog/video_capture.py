@@ -1,4 +1,4 @@
-from network.network_agent import ImageSender
+from stereo_camera.network_agent import ImageSender
 import zmq
 import sys
 import argparse
@@ -15,7 +15,7 @@ RES: Tuple[int, int] = (640, 480)
 def main():
     # Construct argument parser and add arguments to it
     ap = argparse.ArgumentParser()
-    ap.add_argument('-fr', '--framerate', required=False, help='frame rate of the camera (default 10)')
+    ap.add_argument('-fr', '--framerate', required=False, help='frame rate of the sensor (default 10)')
     ap.add_argument('-q', '--jpeg_quality', required=False, help='quality of the JPEG compression (default 95)')
     ap.add_argument('-r', '--rotate', action='store_true', help='if set, image is rotated by 180 degrees before being '
                                                                 'sent to master (useful in particular hardware setups)')

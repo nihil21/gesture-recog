@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-from camera.errors import ChessboardNotFoundError
+from stereo_camera.errors import ChessboardNotFoundError
 from concurrent.futures import ProcessPoolExecutor
 from typing import Tuple, Optional, List
 

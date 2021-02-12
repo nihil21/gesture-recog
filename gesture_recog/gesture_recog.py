@@ -1,7 +1,7 @@
 import argparse
 import zmq
-from camera.stereo_camera import StereoCamera
-from camera.errors import *
+from stereo_camera.stereo_camera import StereoCamera
+from stereo_camera.errors import CalibrationImagesNotFoundError, ChessboardNotFoundError, MissingParametersError
 from typing import Tuple
 
 # Ports of the sensors

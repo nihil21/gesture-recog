@@ -94,7 +94,7 @@ class ImageSender(NetworkAgent):
          - it initializes a VideoStream object with the proper resolution and framerate (using PiCamera if available).
             :param stream_port: integer representing the port to which the socket for the image streaming will be bound
             :param ctrl_port: integer representing the port to which the socket for the control signals will be bound
-            :param res: tuple of two ints representing the resolution of the camera
+            :param res: tuple of two ints representing the resolution of the sensor
             :param framerate: integer representing the framerate (by default 10)
             :param jpeg_quality: integer representing the quality of the JPEG compression
             :param rotate: optional boolean, if 'True' the image will be rotated by 180 degrees
@@ -105,7 +105,7 @@ class ImageSender(NetworkAgent):
         # Set up ImageSender in PUB/SUB mode
         self._sender = imagezmq.ImageSender(connect_to=f'tcp://*:{stream_port}', REQ_REP=False)
 
-        # Set camera options
+        # Set sensor options
         self._streamer = VideoStream(usePiCamera=True, resolution=res, framerate=framerate) if PICAM \
             else VideoStream(src=0, resolution=res, framerate=framerate)
         self._jpeq_quality = jpeg_quality
