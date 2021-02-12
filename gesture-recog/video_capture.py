@@ -1,4 +1,4 @@
-from model.network_agent import ImageSender
+from network.network_agent import ImageSender
 import zmq
 import sys
 import argparse

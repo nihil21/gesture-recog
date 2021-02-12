@@ -1,7 +1,7 @@
 import argparse
 import zmq
-from model.stereo_camera import StereoCamera
-from model.errors import *
+from camera.stereo_camera import StereoCamera
+from camera.errors import *
 from typing import Tuple
 
 # Ports of the sensors

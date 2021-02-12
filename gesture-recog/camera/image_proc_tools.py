@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
-from model.errors import ChessboardNotFoundError
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from camera.errors import ChessboardNotFoundError
+from concurrent.futures import ProcessPoolExecutor
 from typing import Tuple, Optional, List
 
 

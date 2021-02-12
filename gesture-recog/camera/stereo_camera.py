@@ -1,6 +1,6 @@
-from model.network_agent import ImageReceiver
-from utils.image_proc_tools import compute_disparity, process_stereo_image
-from model.errors import *
+from network.network_agent import ImageReceiver
+from camera.image_proc_tools import compute_disparity, process_stereo_image
+from camera.errors import *
 import cv2
 import numpy as np
 import os
