@@ -5,7 +5,7 @@ import cv2
 import imutils
 from imutils.video import VideoStream
 import time
-from typing import Tuple, Optional
+import typing
 try:
     from picamera import PiCamera
     PICAM: bool = True
@@ -27,7 +27,7 @@ class NetworkAgent:
 
     def __init__(self,
                  port: int,
-                 ip_addr: Optional[str] = None):
+                 ip_addr: typing.Optional[str] = None):
         """Initialize the NetworkAgent object by setting the ZMQ context, a zmq.PAIR socket and by performing the
         binding to the given port or the connect to the given address and port, depending on the parameters.
             :param port: integer representing the port to which the socket will be bound
@@ -44,14 +44,14 @@ class NetworkAgent:
         else:
             self._sock.connect(f'tcp://{ip_addr}:{port}')
 
-    def send_sig(self, sig: bytes, no_block: Optional[bool] = False):
+    def send_sig(self, sig: bytes, no_block: bool = False):
         """Method implementing the sending of a message over a TCP socket.
             :param sig: bytes representing the signal to be sent
             :param no_block: if set to True, it sends the signal without blocking"""
         flags = zmq.NOBLOCK if no_block else 0
         self._sock.send(sig, flags=flags)
 
-    def recv_sig(self, noblock: Optional[bool] = False) -> str:
+    def recv_sig(self, noblock: bool = False) -> str:
         """Method implementing the reception of a signal over a TCP socket.
             :param noblock: if set to True, it sends the signal without blocking
 
@@ -84,10 +84,10 @@ class ImageSender(NetworkAgent):
     def __init__(self,
                  stream_port: int,
                  ctrl_port: int,
-                 res: Tuple[int, int],
-                 framerate: Optional[int] = 10,
-                 jpeg_quality: Optional[int] = 95,
-                 rotate: Optional[bool] = False):
+                 res: typing.Tuple[int, int],
+                 framerate: int = 10,
+                 jpeg_quality: int = 95,
+                 rotate: bool = False):
         """Constructor of ImageSender object, which performs the following steps:
          - it sets up a zmq.PAIR socket for control signals by calling the base class NetworkAgent constructor;
          - it wraps and initialize a imagezmq.ImageSender object in PUB/SUB mode;

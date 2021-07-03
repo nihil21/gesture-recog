@@ -2,7 +2,7 @@ import argparse
 import zmq
 from stereo_camera.stereo_camera import StereoCamera
 from stereo_camera.errors import CalibrationImagesNotFoundError, ChessboardNotFoundError, MissingParametersError
-from typing import Tuple
+import typing
 
 # Ports of the sensors
 IMG_PORT: int = 8000
@@ -12,7 +12,7 @@ CTRL_PORT: int = 8001
 IMG_FOLDER: str = '../calibration-images/'
 
 # Chessboard size
-PATTERN_SIZE: Tuple[int, int] = (8, 5)
+PATTERN_SIZE: typing.Tuple[int, int] = (8, 5)
 
 # Square length
 SQUARE_LEN: float = 26.5  # mm

@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from threading import Thread, Event
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
-from typing import Tuple
+import typing
 
 
 DELAY_TOL = 0.3
@@ -321,7 +321,7 @@ class StereoCamera:
 
     def calibrate(self,
                   img_folder: str,
-                  pattern_size: Tuple[int, int],
+                  pattern_size: typing.Tuple[int, int],
                   square_length: float,
                   calib_file: str):
         """Computes the calibration parameters of a sensor by using several pictures of a chessboard

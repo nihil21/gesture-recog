@@ -2,11 +2,11 @@ import cv2
 import numpy as np
 from stereo_camera.errors import ChessboardNotFoundError
 from concurrent.futures import ProcessPoolExecutor
-from typing import Tuple, Optional, List
+import typing
 
 
-def process_stereo_image(img_name_pair: Tuple[str, str],
-                         pattern_size: Tuple[int, int]) -> (str, np.ndarray, np.ndarray):
+def process_stereo_image(img_name_pair: typing.Tuple[str, str],
+                         pattern_size: typing.Tuple[int, int]) -> (str, np.ndarray, np.ndarray):
     """Processes a right/left pair of images and detects chessboard corners for calibration
         :param img_name_pair: tuple containing the names of the right and left images, respectively
         :param pattern_size: tuple containing the number of internal corners of the chessboard
@@ -33,7 +33,7 @@ def process_stereo_image(img_name_pair: Tuple[str, str],
 
 
 def process_image_task(img_name: str,
-                       pattern_size: Tuple[int, int]) -> (np.ndarray, np.ndarray):
+                       pattern_size: typing.Tuple[int, int]) -> (np.ndarray, np.ndarray):
     # Find chessboard corners
     img = cv2.imread(img_name, cv2.IMREAD_GRAYSCALE)
     found, corners = cv2.findChessboardCorners(img, pattern_size)
@@ -53,7 +53,7 @@ def process_image_task(img_name: str,
 def compute_disparity(dstL: np.ndarray,
                       dstR: np.ndarray,
                       stereo_matcher: cv2.StereoSGBM,
-                      disp_bounds: Optional[List[float]] = None) -> np.ndarray:
+                      disp_bounds: typing.Optional[typing.List[float]] = None) -> np.ndarray:
     """Given a pair of stereo images, already undistorted and rectified, this function computes the disparity map
         :param dstL: NumPy array representing the left image (already undistorted and rectified)
         :param dstR: NumPy array representing the right image (already undistorted and rectified)

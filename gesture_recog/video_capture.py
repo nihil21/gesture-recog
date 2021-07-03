@@ -2,14 +2,14 @@ from stereo_camera.network_agent import ImageSender
 import zmq
 import sys
 import argparse
-from typing import Tuple
+import typing
 
 # Ports of the sensors
 IMG_PORT: int = 8000
 CTRL_PORT: int = 8001
 
 # Camera size and framerate
-RES: Tuple[int, int] = (640, 480)
+RES: typing.Tuple[int, int] = (640, 480)
 
 
 def main():
