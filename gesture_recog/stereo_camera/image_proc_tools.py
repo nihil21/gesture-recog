@@ -1,12 +1,12 @@
 import cv2
 import numpy as np
-from model.errors import ChessboardNotFoundError
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Tuple, Optional, List
+from stereo_camera.errors import ChessboardNotFoundError
+from concurrent.futures import ProcessPoolExecutor
+import typing
 
 
-def process_stereo_image(img_name_pair: Tuple[str, str],
-                         pattern_size: Tuple[int, int]) -> (str, np.ndarray, np.ndarray):
+def process_stereo_image(img_name_pair: typing.Tuple[str, str],
+                         pattern_size: typing.Tuple[int, int]) -> (str, np.ndarray, np.ndarray):
     """Processes a right/left pair of images and detects chessboard corners for calibration
         :param img_name_pair: tuple containing the names of the right and left images, respectively
         :param pattern_size: tuple containing the number of internal corners of the chessboard
@@ -18,25 +18,22 @@ def process_stereo_image(img_name_pair: Tuple[str, str],
     stereo_img_name = img_name_pair[0].split('/')[-1:][0]
     print(f'Processing image {stereo_img_name}...')
 
-    # Process concurrently both images
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futureL = executor.submit(process_image_thread, img_name_pair[0], pattern_size)
-        futureR = executor.submit(process_image_thread, img_name_pair[1], pattern_size)
+    # Process in parallel both images
+    with ProcessPoolExecutor(max_workers=2) as executor:
+        futureL = executor.submit(process_image_task, img_name_pair[0], pattern_size)
+        futureR = executor.submit(process_image_task, img_name_pair[1], pattern_size)
         # Collect the images with the detected chessboard and the corners, which will be used for calibration
-        for future in as_completed([futureL, futureR]):
-            if future == futureL:
-                img_pointsL, img_drawn_cornersL = futureL.result()
-            else:
-                img_pointsR, img_drawn_cornersR = futureR.result()
-        stereo_img_points = (img_pointsL, img_pointsR)
-        stereo_img_drawn_corners = (img_drawn_cornersL, img_drawn_cornersR)
+        img_pointsL, img_drawn_cornersL = futureL.result()
+        img_pointsR, img_drawn_cornersR = futureR.result()
+    stereo_img_points = (img_pointsL, img_pointsR)
+    stereo_img_drawn_corners = (img_drawn_cornersL, img_drawn_cornersR)
 
     print(f'Image {stereo_img_name} processed')
     return stereo_img_name, stereo_img_points, stereo_img_drawn_corners
 
 
-def process_image_thread(img_name: str,
-                         pattern_size: Tuple[int, int]) -> (np.ndarray, np.ndarray):
+def process_image_task(img_name: str,
+                       pattern_size: typing.Tuple[int, int]) -> (np.ndarray, np.ndarray):
     # Find chessboard corners
     img = cv2.imread(img_name, cv2.IMREAD_GRAYSCALE)
     found, corners = cv2.findChessboardCorners(img, pattern_size)
@@ -56,7 +53,7 @@ def process_image_thread(img_name: str,
 def compute_disparity(dstL: np.ndarray,
                       dstR: np.ndarray,
                       stereo_matcher: cv2.StereoSGBM,
-                      disp_bounds: Optional[List[float]] = None) -> np.ndarray:
+                      disp_bounds: typing.Optional[typing.List[float]] = None) -> np.ndarray:
     """Given a pair of stereo images, already undistorted and rectified, this function computes the disparity map
         :param dstL: NumPy array representing the left image (already undistorted and rectified)
         :param dstR: NumPy array representing the right image (already undistorted and rectified)
@@ -87,26 +84,3 @@ def compute_disparity(dstL: np.ndarray,
     # kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     # disp = cv2.morphologyEx(disp, cv2.MORPH_CLOSE, kernel)
     return disp
-
-
-def compute_depth(disp_point: int,
-                  baseline: float,
-                  alpha_uL: float,
-                  alpha_uR: float,
-                  u_0L: float,
-                  u_0R: float) -> float:
-    """This function, given a disparity value of a point and the camera parameters,
-    computes the corresponding depth of such point
-    :param disp_point: integer representing the disparity value of a point
-    :param baseline: float representing the distance between the two cameras
-    :param alpha_uL: float representing the alpha_u intrinsic parameter of the left camera
-    :param alpha_uR: float representing the alpha_u intrinsic parameter of the right camera
-    :param u_0L: float representing the u_0 intrinsic parameter of the left camera
-    :param u_0R: float representing the u_0 intrinsic parameter of the right camera
-
-    :return depth: float representing the depth of the given point"""
-
-    # Compute the average alpha_u
-    alpha_u = (alpha_uL + alpha_uR) / 2
-    # Compute the depth
-    return alpha_u * baseline / (disp_point + u_0R - u_0L)

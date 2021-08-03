@@ -7,6 +7,8 @@
       <w>dtype</w>
       <w>framerate</w>
       <w>homography</w>
+      <w>imagezmq</w>
+      <w>jpeq</w>
       <w>picam</w>
       <w>procs</w>
       <w>recv</w>
