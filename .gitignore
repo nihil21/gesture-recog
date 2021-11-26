@@ -132,8 +132,3 @@ dmypy.json
 .vscode/
 .idea/
 gesture-recog.iml
-
-# calibration samples
-calibration-data/
-calibration-images/
-disp-samples/
