@@ -809,6 +809,8 @@ class StereoCamera:
 
             # When 'q' is pressed, save current frames and disparity maps to file and break the loop
             if cv2.waitKey(1) & 0xFF == ord("q"):
+                print(type(hand_depth))
+                print(hand_depth.shape)
                 self.multicast_send_sig(b"STOP")
                 self._kill_io_threads()
                 break

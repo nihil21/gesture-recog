@@ -203,7 +203,7 @@ class ImageReceiver(NetworkAgent):
             open_port=f"tcp://{ip_addr}:{stream_port}", REQ_REP=False
         )
 
-    def recv_frame(self) -> (float, np.ndarray):
+    def recv_frame(self) -> typing.Tuple[float, np.ndarray]:
         """Method implementing the receiving of an image over the zmq.SUB socket, together with the timestamp."""
         tstamp, jpg_frame = self._receiver.recv_jpg()
         frame = cv2.imdecode(

@@ -128,10 +128,7 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-# PyCharm
+# VSCode and PyCharm
+.vscode/
 .idea/
 gesture-recog.iml
-
-calibration-data/
-calibration-images/
-disp-samples/

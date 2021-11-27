@@ -1,21 +1,11 @@
 <component name="ProjectDictionaryState">
   <dictionary name="nihil">
     <words>
-      <w>addr</w>
-      <w>denoise</w>
-      <w>denoised</w>
       <w>dtype</w>
-      <w>framerate</w>
       <w>homography</w>
-      <w>imagezmq</w>
-      <w>jpeq</w>
       <w>picam</w>
-      <w>procs</w>
-      <w>recv</w>
       <w>savez</w>
-      <w>subtractor</w>
       <w>subtractors</w>
-      <w>tstamp</w>
     </words>
   </dictionary>
 </component>
